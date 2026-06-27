@@ -142,6 +142,8 @@
     border-radius:var(--r-pill);border:2px solid var(--ink);background:#fff;}
   .optchip.on{background:var(--peach);box-shadow:var(--sh-xs);}
 
+  .camrow{display:flex;align-items:center;gap:7px;flex-wrap:wrap;justify-content:center;}
+  .camrow .flbl{width:auto;margin:0 2px 0 0;}
   .start .go{font-family:var(--font-display);font-size:18px;color:var(--ink);text-transform:uppercase;letter-spacing:-.3px;
     border:var(--border-w) solid var(--ink);padding:15px 38px;border-radius:var(--r-pill);
     background:var(--peach);box-shadow:var(--sh-card);}
@@ -244,6 +246,12 @@
         <div class="chiprow" id="goalChips"></div>
       </div>
     </div>
+  </div>
+
+  <div class="camrow">
+    <span class="flbl">Kamera</span>
+    <button class="optchip nb on" id="camBack" data-f="environment">Hinten</button>
+    <button class="optchip nb" id="camFront" data-f="user">Vorne (Selfie)</button>
   </div>
 
   <button class="go nb" id="startBtn">Kamera starten</button>
@@ -415,6 +423,19 @@ function isRecommended(ex){
   if(!profile.goals.length) return false;
   if(profile.goals.indexOf('full')>=0) return true;
   return ex.goals.some(g=>profile.goals.indexOf(g)>=0);
+}
+
+// Kamera vorne/hinten wählen (Frontkamera wird gespiegelt = Selfie-Ansicht)
+async function setFacing(f){
+  facing=f;
+  updateCamUI();
+  if(running){ try{ await startCamera(); }catch(e){} }
+}
+function updateCamUI(){
+  const fb=document.getElementById('flipBtn'); if(fb) fb.textContent = facing==='user' ? 'Kamera: Vorne' : 'Kamera: Hinten';
+  const cb=document.getElementById('camBack'),  cf=document.getElementById('camFront');
+  if(cb) cb.classList.toggle('on', facing==='environment');
+  if(cf) cf.classList.toggle('on', facing==='user');
 }
 
 // =====================================================================
@@ -707,25 +728,32 @@ function buildProfilePanel(){
 //  5) ZEICHNEN
 // =====================================================================
 function draw(joints,angle,pct){
+  const mirror = (facing==='user');     // Frontkamera als Spiegelbild zeichnen
   ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.save();
+  if(mirror){ ctx.translate(canvas.width,0); ctx.scale(-1,1); }
   ctx.drawImage(video,0,0,canvas.width,canvas.height);
-  if(!joints) return;
-  const col = pct>=CUR.goodPct ? '#6FC36A' : pct>=CUR.okPct ? '#F5CB44' : '#F18FB6';
-  // Knochen a-b-c
-  ctx.lineWidth=Math.max(5,canvas.width/150); ctx.strokeStyle='#181016'; ctx.lineCap='round';
-  ctx.beginPath(); ctx.moveTo(joints.a.x,joints.a.y); ctx.lineTo(joints.b.x,joints.b.y); ctx.lineTo(joints.c.x,joints.c.y); ctx.stroke();
-  ctx.lineWidth=Math.max(3,canvas.width/220); ctx.strokeStyle=col;
-  ctx.beginPath(); ctx.moveTo(joints.a.x,joints.a.y); ctx.lineTo(joints.b.x,joints.b.y); ctx.lineTo(joints.c.x,joints.c.y); ctx.stroke();
-  // Gelenke
-  for(const p of [joints.a,joints.b,joints.c]){
-    ctx.beginPath(); ctx.arc(p.x,p.y,Math.max(7,canvas.width/85),0,Math.PI*2);
-    ctx.fillStyle=col; ctx.fill(); ctx.lineWidth=3; ctx.strokeStyle='#181016'; ctx.stroke();
+  if(joints){
+    const col = pct>=CUR.goodPct ? '#6FC36A' : pct>=CUR.okPct ? '#F5CB44' : '#F18FB6';
+    // Knochen a-b-c
+    ctx.lineWidth=Math.max(5,canvas.width/150); ctx.strokeStyle='#181016'; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(joints.a.x,joints.a.y); ctx.lineTo(joints.b.x,joints.b.y); ctx.lineTo(joints.c.x,joints.c.y); ctx.stroke();
+    ctx.lineWidth=Math.max(3,canvas.width/220); ctx.strokeStyle=col;
+    ctx.beginPath(); ctx.moveTo(joints.a.x,joints.a.y); ctx.lineTo(joints.b.x,joints.b.y); ctx.lineTo(joints.c.x,joints.c.y); ctx.stroke();
+    // Gelenke
+    for(const p of [joints.a,joints.b,joints.c]){
+      ctx.beginPath(); ctx.arc(p.x,p.y,Math.max(7,canvas.width/85),0,Math.PI*2);
+      ctx.fillStyle=col; ctx.fill(); ctx.lineWidth=3; ctx.strokeStyle='#181016'; ctx.stroke();
+    }
   }
-  // Winkel-Zahl am gemessenen Gelenk (mit Kontur lesbar)
+  ctx.restore();
+  if(!joints) return;
+  // Winkel-Zahl lesbar (nicht gespiegelt), an die sichtbare Gelenk-Position gesetzt
   const t=String(Math.round(angle)), size=Math.max(22,canvas.width/22);
+  const sx=(mirror ? (canvas.width-joints.b.x) : joints.b.x)+16;
   ctx.font='700 '+size+'px "Space Grotesk",sans-serif'; ctx.textBaseline='middle';
-  ctx.lineWidth=Math.max(4,size/6); ctx.strokeStyle='#181016'; ctx.strokeText(t,joints.b.x+16,joints.b.y);
-  ctx.fillStyle='#FBF3E7'; ctx.fillText(t,joints.b.x+16,joints.b.y);
+  ctx.lineWidth=Math.max(4,size/6); ctx.strokeStyle='#181016'; ctx.strokeText(t,sx,joints.b.y);
+  ctx.fillStyle='#FBF3E7'; ctx.fillText(t,sx,joints.b.y);
 }
 
 // =====================================================================
@@ -801,10 +829,12 @@ window.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('resetBtn').addEventListener('click',resetSession);
   document.getElementById('setBtn').addEventListener('click',()=>{ setActive ? endSet() : startSet(); });
   document.getElementById('newSetBtn').addEventListener('click',startSet);
-  document.getElementById('flipBtn').addEventListener('click',async()=>{
-    facing = facing==='environment' ? 'user' : 'environment';
-    try{ await startCamera(); }catch(e){}
-  });
+
+  // Kamera-Wahl: Startscreen-Chips + Umschalt-Button im Lauf
+  document.getElementById('camBack').addEventListener('click',()=>setFacing('environment'));
+  document.getElementById('camFront').addEventListener('click',()=>setFacing('user'));
+  document.getElementById('flipBtn').addEventListener('click',()=>setFacing(facing==='user'?'environment':'user'));
+  updateCamUI();
 });
 </script>
 </body>

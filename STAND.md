@@ -139,6 +139,11 @@ Aufklappbarer Block „Dein Profil" auf dem Startscreen. Wird live in localStora
   ein nach Qualität eingefärbter Balken · bei Erfolg Video + Download-Link · „Neuer Satz".
 - Übungswechsel mitten im Satz bricht die Aufnahme sauber ab.
 
+**Kamera vorne/hinten:** Auf dem Startscreen wählbar (Hinten / Vorne-Selfie), im Lauf per
+„Kamera"-Button umschaltbar (auch während eines Satzes). Die **Frontkamera wird gespiegelt**
+dargestellt (natürliche Selfie-Ansicht); die Winkelzahl bleibt lesbar, die Winkel-Mathe ist
+spiegel-invariant (Bewertung unverändert). Standard ist die Rückkamera.
+
 ## 7. Design-System (Neobrutalism, aus dem Peach-Projekt)
 
 Übernommen als visuelle Sprache, übersetzt auf Formchecks Vollbild-Kamera-Oberflächen:
