@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<!--
+  FORM-CHECK · SQUAT (MVP)
+  ------------------------
+  Pose-Detection im Browser. Kein Server, kein API-Key, alles lokal.
+
+  Die Pipeline in 5 Schritten (so ist auch der Code unten gegliedert):
+    1) KAMERA holen        -> getUserMedia liefert den Live-Videostream
+    2) MODELL laden        -> MoveNet (TensorFlow.js) erkennt pro Frame 17 Körperpunkte
+    3) MATHE               -> aus Hüfte/Knie/Knöchel den Kniewinkel + Tiefe berechnen
+    4) LOGIK               -> Zustandsautomat zählt Wiederholungen + bewertet Tiefe
+    5) ZEICHNEN            -> Skelett + Tiefen-Balken aufs Canvas, HUD drüber
+
+  WICHTIG: Kamera im Browser braucht HTTPS. Lokal per Doppelklick geht das auf
+  dem iPhone NICHT. Über GitHub Pages (https://...) läuft es. Am PC geht localhost.
+-->
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Form-Check · Squat</title>
+
+<!-- TensorFlow.js + MoveNet (feste Versionen für Stabilität) -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.22.0/dist/tf-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@4.22.0/dist/tf-converter.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@4.22.0/dist/tf-backend-webgl.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700;800;900&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --pink:#ff9ec4; --pink-deep:#f06aa0; --violet:#b79cf0; --violet-deep:#9a7be8;
+    --ink:#5a4a55; --good:#36c98a; --warn:#f5a623; --bad:#f0617a;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{height:100%;background:#1a1620;font-family:'Nunito',sans-serif;color:#fff;overflow:hidden;}
+  #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#1a1620;}
+  canvas{max-width:100%;max-height:100%;display:block;}
+  video{display:none;}
+
+  /* HUD oben */
+  .hud{position:fixed;top:0;left:0;right:0;padding:18px 18px calc(18px + env(safe-area-inset-top));
+       display:flex;justify-content:space-between;align-items:flex-start;gap:12px;pointer-events:none;
+       background:linear-gradient(rgba(26,22,32,.78),transparent);}
+  .reps{display:flex;flex-direction:column;line-height:1;}
+  .reps .num{font-size:54px;font-weight:900;
+    background:linear-gradient(90deg,var(--pink),var(--violet));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;}
+  .reps .lbl{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:#cbb9c6;margin-top:2px;}
+  .angle{text-align:right;}
+  .angle .num{font-size:30px;font-weight:900;font-variant-numeric:tabular-nums;}
+  .angle .lbl{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#cbb9c6;}
+
+  /* Tiefen-Balken rechts */
+  .depthbar{position:fixed;right:16px;top:50%;transform:translateY(-50%);
+    width:14px;height:42vh;background:rgba(255,255,255,.12);border-radius:10px;overflow:hidden;pointer-events:none;}
+  .depthfill{position:absolute;left:0;right:0;bottom:0;height:0%;border-radius:10px;
+    background:linear-gradient(var(--good),var(--warn));transition:height .08s linear;}
+  .depthtick{position:absolute;left:-6px;right:-6px;height:2px;background:rgba(255,255,255,.45);}
+
+  /* Cue unten */
+  .cue{position:fixed;left:0;right:0;bottom:0;padding:18px 18px calc(22px + env(safe-area-inset-bottom));
+    text-align:center;font-size:19px;font-weight:800;pointer-events:none;
+    background:linear-gradient(transparent,rgba(26,22,32,.82));}
+  .cue .pill{display:inline-block;padding:9px 18px;border-radius:24px;background:rgba(255,255,255,.14);backdrop-filter:blur(6px);}
+
+  /* Startscreen */
+  .start{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:18px;padding:32px;text-align:center;
+    background:radial-gradient(900px 600px at 50% 20%, #2a2233, #1a1620);}
+  .start h1{font-size:30px;font-weight:900;
+    background:linear-gradient(90deg,var(--pink),var(--violet));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;}
+  .start p{max-width:340px;color:#d6c8d2;font-weight:600;line-height:1.5;font-size:15px;}
+  .start ol{max-width:340px;text-align:left;color:#cbb9c6;font-size:14px;font-weight:700;line-height:1.7;margin:2px 0;}
+  .start button{font-family:'Nunito';font-weight:900;font-size:17px;color:#fff;border:none;cursor:pointer;
+    padding:16px 34px;border-radius:18px;background:linear-gradient(135deg,var(--pink),var(--pink-deep));
+    box-shadow:0 10px 26px rgba(240,106,160,.4);}
+  .start button:disabled{opacity:.6;}
+  .status{font-size:13px;font-weight:700;color:#b3a3ae;min-height:18px;}
+
+  .toprow{position:fixed;top:calc(12px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);
+    z-index:15;display:flex;gap:8px;}
+  .toprow button{pointer-events:auto;font-family:'Nunito';font-weight:800;font-size:13px;color:#fff;border:none;cursor:pointer;
+    padding:9px 14px;border-radius:14px;background:rgba(255,255,255,.16);backdrop-filter:blur(6px);}
+  .hidden{display:none!important;}
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <video id="video" playsinline muted></video>
+  <canvas id="canvas"></canvas>
+</div>
+
+<!-- HUD -->
+<div class="hud hidden" id="hud">
+  <div class="reps"><span class="num" id="repNum">0</span><span class="lbl">Reps</span></div>
+  <div class="angle"><div class="num" id="angNum">–°</div><div class="lbl">Kniewinkel</div></div>
+</div>
+<div class="depthbar hidden" id="depthbar">
+  <div class="depthtick" style="bottom:60%"></div><!-- ~Parallel-Marke -->
+  <div class="depthfill" id="depthfill"></div>
+</div>
+<div class="cue hidden" id="cue"><span class="pill" id="cuePill">Stell dich seitlich ins Bild</span></div>
+
+<div class="toprow hidden" id="toprow">
+  <button id="resetBtn">Reps 0</button>
+  <button id="flipBtn">Kamera</button>
+</div>
+
+<!-- Startscreen -->
+<div class="start" id="startScreen">
+  <h1>Form-Check · Squat</h1>
+  <p>Misst deine Kniebeugen-Tiefe und zählt Wiederholungen automatisch.</p>
+  <ol>
+    <li>1 · Handy <b>seitlich</b> aufstellen (Profil zur Kamera)</li>
+    <li>2 · Ganzer Körper im Bild – Hüfte, Knie, Knöchel</li>
+    <li>3 · Beugen – pro Wiederholung gibt's einen Piep</li>
+  </ol>
+  <button id="startBtn">Kamera starten</button>
+  <div class="status" id="status"></div>
+</div>
+
+<script>
+// =====================================================================
+//  ZUSTAND
+// =====================================================================
+let detector=null, video, canvas, ctx, stream=null, running=false;
+let facing='environment';                 // Rückkamera; "user" = Frontkamera
+let reps=0, stage='up', minThisRep=180;   // Zustandsautomat fürs Zählen
+const DOWN_ANGLE=110;                      // unter diesem Kniewinkel zählt es als "unten"
+const UP_ANGLE=150;                        // über diesem wieder als "oben" -> Rep fertig
+const STAND_ANGLE=172, DEEP_ANGLE=72;      // Bereich für den Tiefen-Balken (0%..100%)
+
+// MoveNet/COCO-Punktnamen, die wir brauchen
+const J={lh:'left_hip',lk:'left_knee',la:'left_ankle',rh:'right_hip',rk:'right_knee',ra:'right_ankle'};
+
+// =====================================================================
+//  1) KAMERA
+// =====================================================================
+async function startCamera(){
+  if(stream){ stream.getTracks().forEach(t=>t.stop()); }
+  stream=await navigator.mediaDevices.getUserMedia({
+    video:{facingMode:facing, width:{ideal:1280}, height:{ideal:720}}, audio:false
+  });
+  video.srcObject=stream;
+  await video.play();
+  // Canvas an die echte Videogröße koppeln -> Keypoints passen 1:1
+  canvas.width=video.videoWidth;
+  canvas.height=video.videoHeight;
+}
+
+// =====================================================================
+//  2) MODELL
+// =====================================================================
+async function loadModel(setStatus){
+  setStatus('Lade KI-Modell …');
+  await tf.setBackend('webgl'); await tf.ready();
+  detector=await poseDetection.createDetector(
+    poseDetection.SupportedModels.MoveNet,
+    {modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING}
+  );
+}
+
+// =====================================================================
+//  3) MATHE: Winkel & Tiefe
+// =====================================================================
+// Winkel am Punkt b (zwischen den Strecken b->a und b->c), in Grad
+function angleAt(a,b,c){
+  const abx=a.x-b.x, aby=a.y-b.y, cbx=c.x-b.x, cby=c.y-b.y;
+  const dot=abx*cbx+aby*cby;
+  const mag=(Math.hypot(abx,aby)*Math.hypot(cbx,cby))||1;
+  return Math.acos(Math.max(-1,Math.min(1,dot/mag)))*180/Math.PI;
+}
+// Tiefe in % aus dem Kniewinkel
+function depthPct(ang){
+  return Math.max(0,Math.min(1,(STAND_ANGLE-ang)/(STAND_ANGLE-DEEP_ANGLE)));
+}
+// Punkte als Lookup nach Namen, nur wenn sicher genug
+function pickJoints(keypoints){
+  const map={}; for(const k of keypoints){ if(k.score>0.3) map[k.name]=k; }
+  const leftOk = map[J.lh]&&map[J.lk]&&map[J.la];
+  const rightOk= map[J.rh]&&map[J.rk]&&map[J.ra];
+  // mittlere Sicherheit je Seite -> bessere Seite wählen
+  const sc=(a,b,c)=> (a&&b&&c)?(a.score+b.score+c.score)/3:-1;
+  const ls=sc(map[J.lh],map[J.lk],map[J.la]), rs=sc(map[J.rh],map[J.rk],map[J.ra]);
+  if(!leftOk && !rightOk) return null;
+  const useLeft = ls>=rs;
+  return useLeft
+    ? {hip:map[J.lh],knee:map[J.lk],ankle:map[J.la],side:'links'}
+    : {hip:map[J.rh],knee:map[J.rk],ankle:map[J.ra],side:'rechts'};
+}
+
+// =====================================================================
+//  4) LOGIK: Wiederholungen zählen + Tiefen-Feedback
+// =====================================================================
+function updateReps(kneeAngle){
+  minThisRep=Math.min(minThisRep,kneeAngle);
+  if(kneeAngle<DOWN_ANGLE && stage==='up'){ stage='down'; }
+  if(kneeAngle>UP_ANGLE && stage==='down'){
+    stage='up'; reps++;
+    const deepest=minThisRep; minThisRep=180;
+    beep();
+    showRepFeedback(deepest);
+    document.getElementById('repNum').textContent=reps;
+    document.getElementById('resetBtn').textContent='Reps '+reps;
+  }
+}
+function showRepFeedback(deepest){
+  const pill=document.getElementById('cuePill');
+  if(deepest<90){ pill.textContent='Tiefe top 💪'; pill.style.color='var(--good)'; }
+  else if(deepest<110){ pill.textContent='Fast – etwas tiefer'; pill.style.color='var(--warn)'; }
+  else { pill.textContent='Zu hoch – tiefer beugen'; pill.style.color='var(--bad)'; }
+}
+
+// Kurzer Piep über die Web Audio API (kennst du aus Calma)
+let audioCtx=null;
+function beep(){
+  try{
+    audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();
+    const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+    o.type='sine'; o.frequency.value=660; o.connect(g); g.connect(audioCtx.destination);
+    g.gain.setValueAtTime(0.001,audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.25,audioCtx.currentTime+0.01);
+    g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.18);
+    o.start(); o.stop(audioCtx.currentTime+0.2);
+  }catch(e){}
+}
+
+// =====================================================================
+//  5) ZEICHNEN
+// =====================================================================
+const BONES=[['hip','knee'],['knee','ankle']]; // wir zeichnen nur das relevante Bein
+function draw(joints,kneeAngle){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);
+  if(!joints) return;
+  const col = kneeAngle<90 ? '#36c98a' : kneeAngle<110 ? '#f5a623' : '#ff9ec4';
+  // Knochen
+  ctx.lineWidth=Math.max(4,canvas.width/180); ctx.strokeStyle=col; ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(joints.hip.x,joints.hip.y); ctx.lineTo(joints.knee.x,joints.knee.y);
+  ctx.lineTo(joints.ankle.x,joints.ankle.y); ctx.stroke();
+  // Gelenke
+  for(const p of [joints.hip,joints.knee,joints.ankle]){
+    ctx.beginPath(); ctx.arc(p.x,p.y,Math.max(6,canvas.width/90),0,Math.PI*2);
+    ctx.fillStyle='#fff'; ctx.fill(); ctx.lineWidth=3; ctx.strokeStyle=col; ctx.stroke();
+  }
+  // Winkel-Zahl am Knie
+  ctx.fillStyle='#fff'; ctx.font='800 '+Math.max(20,canvas.width/24)+'px Nunito';
+  ctx.fillText(Math.round(kneeAngle)+'°', joints.knee.x+14, joints.knee.y);
+}
+
+// =====================================================================
+//  HAUPT-SCHLEIFE
+// =====================================================================
+async function loop(){
+  if(!running) return;
+  const poses=await detector.estimatePoses(video,{flipHorizontal:false});
+  let kneeAngle=null, joints=null;
+  if(poses[0]){
+    joints=pickJoints(poses[0].keypoints);
+    if(joints){
+      kneeAngle=angleAt(joints.hip,joints.knee,joints.ankle);
+      updateReps(kneeAngle);
+      // HUD aktualisieren
+      document.getElementById('angNum').textContent=Math.round(kneeAngle)+'°';
+      document.getElementById('depthfill').style.height=(depthPct(kneeAngle)*100).toFixed(0)+'%';
+      if(stage==='up' && minThisRep===180){
+        const pill=document.getElementById('cuePill');
+        pill.textContent='Bereit · Seite '+joints.side; pill.style.color='#fff';
+      }
+    }else{
+      document.getElementById('cuePill').textContent='Stell dich seitlich ins Bild';
+      document.getElementById('cuePill').style.color='#fff';
+    }
+  }
+  draw(joints,kneeAngle);
+  requestAnimationFrame(loop);
+}
+
+// =====================================================================
+//  START / STEUERUNG
+// =====================================================================
+window.addEventListener('DOMContentLoaded',()=>{
+  video=document.getElementById('video');
+  canvas=document.getElementById('canvas');
+  ctx=canvas.getContext('2d');
+  const setStatus=t=>document.getElementById('status').textContent=t;
+
+  document.getElementById('startBtn').addEventListener('click',async()=>{
+    const btn=document.getElementById('startBtn'); btn.disabled=true;
+    try{
+      if(!detector) await loadModel(setStatus);
+      setStatus('Starte Kamera …');
+      await startCamera();
+      document.getElementById('startScreen').classList.add('hidden');
+      ['hud','depthbar','cue','toprow'].forEach(id=>document.getElementById(id).classList.remove('hidden'));
+      running=true; loop();
+    }catch(e){
+      setStatus('Fehler: '+(e.message||e)+' — Kamera erlaubt? HTTPS aktiv?');
+      btn.disabled=false;
+    }
+  });
+
+  document.getElementById('resetBtn').addEventListener('click',()=>{
+    reps=0; stage='up'; minThisRep=180;
+    document.getElementById('repNum').textContent='0';
+    document.getElementById('resetBtn').textContent='Reps 0';
+  });
+
+  document.getElementById('flipBtn').addEventListener('click',async()=>{
+    facing = facing==='environment' ? 'user' : 'environment';
+    try{ await startCamera(); }catch(e){}
+  });
+});
+</script>
+</body>
+</html>
