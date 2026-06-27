@@ -1,29 +1,31 @@
 <!DOCTYPE html>
 <!--
-  FORM-CHECK · MULTI-ÜBUNG (Config-Refactor)
-  ------------------------------------------
-  Pose-Detection im Browser. Kein Server, kein API-Key, alles lokal.
+  FORM-CHECK · Pose-Detection-Trainings-App (Neobrutalism-Redesign)
+  -----------------------------------------------------------------
+  Läuft komplett im Browser: kein Server, kein API-Key, alles lokal.
+  Eigenständig — KEINE Peach-Anbindung (Profil liegt in formcheck_profile).
 
-  Die Pipeline in 5 Schritten (so ist auch der Code unten gegliedert):
-    1) KAMERA holen        -> getUserMedia liefert den Live-Videostream
-    2) MODELL laden        -> MoveNet (TensorFlow.js) erkennt pro Frame 17 Körperpunkte
-    3) MATHE               -> aus 3 Gelenkpunkten den Winkel + Tiefen-Prozent berechnen
-    4) LOGIK               -> universeller Zustandsautomat zählt Reps + bewertet die Tiefe
-    5) ZEICHNEN            -> Skelett + Tiefen-Balken aufs Canvas, HUD drüber
+  Pipeline (so ist der Code gegliedert):
+    1) KAMERA   -> getUserMedia liefert den Live-Videostream
+    2) MODELL   -> MoveNet (TensorFlow.js) erkennt pro Frame 17 Körperpunkte
+    3) MATHE    -> aus 3 Gelenkpunkten Winkel + Tiefen-Prozent (0..1)
+    4) LOGIK    -> universeller Zustandsautomat zählt Reps + bewertet Tiefe
+    5) ZEICHNEN -> Skelett + Tiefen-Balken aufs Canvas, HUD drüber
 
-  KERN-IDEE (Config-Refactor):
-    Jede Übung ist NUR ein Eintrag in EXERCISES. Die Logik ist für alle gleich.
-    Trick: jeden Winkel in einen Tiefen-Prozentwert (0..1) umrechnen. In diesem
-    pct-Raum gilt für JEDE Übung "mehr = besser/tiefer" -> der Zustandsautomat
-    ist universell. Neue Übung = neue Config-Zeile, kein neuer Code.
+  Kern-Idee: jeder Winkel wird in einen Tiefen-Prozentwert (0..1) umgerechnet.
+  In diesem pct-Raum gilt für JEDE Übung "mehr = besser/tiefer" -> der
+  Zustandsautomat ist universell. Neue Übung = neue Config-Zeile, kein neuer Code.
 
-  WICHTIG: Kamera im Browser braucht HTTPS. Lokal per Doppelklick geht das auf
-  dem iPhone NICHT. Über GitHub Pages (https://...) läuft es. Am PC geht localhost.
+  Design: Neobrutalism (Peach Project) — flache helle Farbblöcke, dicke
+  Ink-Ränder, harte Offset-Schatten, Archivo Black + Space Grotesk.
+
+  WICHTIG: Kamera braucht HTTPS -> läuft über GitHub Pages, am PC über localhost.
 -->
 <html lang="de">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#B49DF2">
 <title>Form-Check</title>
 
 <!-- TensorFlow.js + MoveNet (feste Versionen für Stabilität) -->
@@ -33,98 +35,144 @@
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700;800;900&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+  /* ===== Neobrutalism-Tokens (aus dem Peach-Design-System) ===== */
   :root{
-    --pink:#ff9ec4; --pink-deep:#f06aa0; --violet:#b79cf0; --violet-deep:#9a7be8;
-    --ink:#5a4a55; --good:#36c98a; --warn:#f5a623; --bad:#f0617a;
+    color-scheme: light;
+    --ink:#181016; --shadow-col:#181016; --on-accent:#181016;
+    --peach:#F4A45E; --pink:#F18FB6; --lilac:#B49DF2; --lime:#B6DD57;
+    --sky:#8CCBE8; --yellow:#F5CB44; --cream:#FBF3E7;
+    --gold:#F5B53C; --green:#6FC36A; --blue:#5EA8E0; --red:#EC6A6A;
+    --bg:#E9DEF8;
+    --text:#181016; --text-soft:#45343D; --text-mid:#5E4C55; --text-dim:#7E6C76;
+    --font-display:'Archivo Black','Space Grotesk',system-ui,sans-serif;
+    --font-sans:'Space Grotesk',system-ui,-apple-system,sans-serif;
+    --border-w:2.5px;
+    --r-sm:10px; --r-md:12px; --r-lg:16px; --r-xl:20px; --r-pill:999px;
+    --bar-empty:rgba(24,16,22,.10);
+    --sh-xs:2px 2px 0 var(--ink); --sh-sm:3px 3px 0 var(--ink);
+    --sh-card:4px 4px 0 var(--ink); --sh-drop:5px 5px 0 var(--ink); --sh-press:1px 1px 0 var(--ink);
+    --ease:cubic-bezier(.2,.8,.2,1);
   }
-  *{margin:0;padding:0;box-sizing:border-box;}
-  html,body{height:100%;background:#1a1620;font-family:'Nunito',sans-serif;color:#fff;overflow:hidden;}
-  #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#1a1620;}
+  *,*::before,*::after{margin:0;padding:0;box-sizing:border-box;}
+  html,body{height:100%;overflow:hidden;}
+  body{background:var(--bg);color:var(--text);font-family:var(--font-sans);-webkit-tap-highlight-color:transparent;}
+  button{font-family:inherit;cursor:pointer;transition:transform .08s var(--ease),box-shadow .08s var(--ease),background .12s,color .12s;}
+  button:active{transform:translate(2px,2px);}
+  button.nb:active{box-shadow:var(--sh-press)!important;}
+
+  #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#181016;}
   canvas{max-width:100%;max-height:100%;display:block;}
   video{display:none;}
 
-  /* HUD oben */
-  .hud{position:fixed;top:0;left:0;right:0;padding:18px 18px calc(18px + env(safe-area-inset-top));
-       display:flex;justify-content:space-between;align-items:flex-start;gap:12px;pointer-events:none;
-       background:linear-gradient(rgba(26,22,32,.78),transparent);}
-  .reps{display:flex;flex-direction:column;line-height:1;}
-  .reps .num{font-size:54px;font-weight:900;
-    background:linear-gradient(90deg,var(--pink),var(--violet));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;}
-  .reps .lbl{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:#cbb9c6;margin-top:2px;}
+  /* ===== HUD oben (cream-Blöcke, damit sie aufs Video poppen) ===== */
+  .hud{position:fixed;top:0;left:0;right:0;padding:64px 12px 10px;
+    display:flex;justify-content:space-between;align-items:flex-start;gap:10px;pointer-events:none;}
+  .reps,.angle{background:var(--cream);border:var(--border-w) solid var(--ink);border-radius:var(--r-lg);
+    box-shadow:var(--sh-sm);padding:7px 13px;}
+  .reps{display:flex;flex-direction:column;align-items:flex-start;line-height:1;}
+  .reps .num{font-family:var(--font-display);font-size:40px;color:var(--ink);letter-spacing:-1px;}
+  .reps .lbl,.angle .lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-mid);margin-top:3px;}
   .angle{text-align:right;}
-  .angle .num{font-size:30px;font-weight:900;font-variant-numeric:tabular-nums;}
-  .angle .lbl{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#cbb9c6;}
+  .angle .num{font-family:var(--font-display);font-size:24px;color:var(--ink);letter-spacing:-.5px;}
 
-  /* Tiefen-Balken rechts */
-  .depthbar{position:fixed;right:16px;top:50%;transform:translateY(-50%);
-    width:14px;height:42vh;background:rgba(255,255,255,.12);border-radius:10px;overflow:hidden;pointer-events:none;}
-  .depthfill{position:absolute;left:0;right:0;bottom:0;height:0%;border-radius:10px;
-    background:linear-gradient(var(--good),var(--warn));transition:height .08s linear;}
-  .depthtick{position:absolute;left:-6px;right:-6px;height:2px;background:rgba(255,255,255,.45);}
+  /* ===== Tiefen-Balken rechts ===== */
+  .depthbar{position:fixed;right:12px;top:50%;transform:translateY(-50%);
+    width:18px;height:38vh;background:var(--cream);border:var(--border-w) solid var(--ink);
+    border-radius:var(--r-pill);overflow:hidden;pointer-events:none;box-shadow:var(--sh-sm);}
+  .depthfill{position:absolute;left:0;right:0;bottom:0;height:0%;background:var(--peach);border-top:2px solid var(--ink);transition:height .08s linear;}
+  .depthtick{position:absolute;left:-4px;right:-4px;height:2.5px;background:var(--ink);z-index:2;}
 
-  /* Unterer Bereich: Cue + großer Satz-Button */
-  .bottom{position:fixed;left:0;right:0;bottom:0;padding:14px 18px calc(20px + env(safe-area-inset-bottom));
-    display:flex;flex-direction:column;align-items:center;gap:12px;
-    background:linear-gradient(transparent,rgba(26,22,32,.85));}
-  .cuewrap{text-align:center;font-size:19px;font-weight:800;pointer-events:none;}
-  .cuewrap .pill{display:inline-block;padding:9px 18px;border-radius:24px;background:rgba(255,255,255,.14);backdrop-filter:blur(6px);}
-  .setbtn{font-family:'Nunito';font-weight:900;font-size:18px;color:#fff;border:none;cursor:pointer;
-    padding:15px 0;width:min(420px,82vw);border-radius:18px;
-    background:linear-gradient(135deg,var(--pink),var(--pink-deep));box-shadow:0 10px 26px rgba(240,106,160,.4);}
-  .setbtn.active{background:linear-gradient(135deg,#f0617a,#c8334f);box-shadow:0 10px 26px rgba(200,51,79,.45);}
+  /* ===== Unten: Cue + großer Satz-Button ===== */
+  .bottom{position:fixed;left:0;right:0;bottom:0;padding:10px 12px calc(14px + env(safe-area-inset-bottom));
+    display:flex;flex-direction:column;align-items:center;gap:10px;pointer-events:none;}
+  .cuewrap .pill{display:inline-block;font-weight:600;font-size:15px;padding:8px 16px;border-radius:var(--r-pill);
+    background:var(--cream);color:var(--ink);border:var(--border-w) solid var(--ink);box-shadow:var(--sh-xs);}
+  .setbtn{pointer-events:auto;font-family:var(--font-display);font-size:17px;color:var(--ink);letter-spacing:-.3px;
+    text-transform:uppercase;border:var(--border-w) solid var(--ink);padding:14px 0;width:min(420px,88vw);
+    border-radius:var(--r-pill);background:var(--peach);box-shadow:var(--sh-card);}
+  .setbtn.active{background:var(--red);}
 
-  /* Summary-Overlay */
-  .summary{position:fixed;inset:0;z-index:25;display:flex;align-items:center;justify-content:center;padding:24px;
-    background:rgba(16,12,20,.82);backdrop-filter:blur(4px);overflow-y:auto;}
-  .summary .card{width:min(440px,92vw);background:#241d2e;border-radius:22px;padding:24px;
-    display:flex;flex-direction:column;gap:16px;box-shadow:0 20px 60px rgba(0,0,0,.5);}
-  .summary h2{font-size:24px;font-weight:900;text-align:center;
-    background:linear-gradient(90deg,var(--pink),var(--violet));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;}
-  .sumstats{display:flex;justify-content:space-around;text-align:center;gap:10px;}
-  .sumstats .big{font-size:34px;font-weight:900;font-variant-numeric:tabular-nums;line-height:1;}
-  .sumstats .sub{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:#cbb9c6;margin-top:4px;}
-  .sumbars{display:flex;align-items:flex-end;gap:5px;height:72px;padding:0 2px;}
-  .repbar{flex:1;min-width:6px;height:100%;display:flex;align-items:flex-end;background:rgba(255,255,255,.07);border-radius:5px;overflow:hidden;}
-  .repbarfill{width:100%;border-radius:5px;}
-  .sumvid{width:100%;border-radius:14px;background:#000;}
-  .sumhint{font-size:13px;font-weight:700;color:#c9b6c4;text-align:center;line-height:1.4;}
-  .dl{text-align:center;font-weight:800;font-size:14px;color:var(--violet);text-decoration:none;
-    padding:8px;border:2px solid rgba(183,156,240,.5);border-radius:12px;}
-  .summary button.go{font-family:'Nunito';font-weight:900;font-size:17px;color:#fff;border:none;cursor:pointer;
-    padding:15px;border-radius:16px;background:linear-gradient(135deg,var(--violet),var(--violet-deep));}
+  /* ===== Obere Leiste (Übungswahl + Buttons) ===== */
+  .toprow{position:fixed;top:calc(10px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);
+    z-index:15;display:flex;gap:6px;align-items:center;max-width:96vw;}
+  .toprow button,.toprow select{pointer-events:auto;font-family:var(--font-sans);font-weight:600;font-size:13px;
+    color:var(--ink);border:var(--border-w) solid var(--ink);padding:8px 11px;border-radius:var(--r-pill);
+    background:var(--cream);box-shadow:var(--sh-xs);-webkit-appearance:none;appearance:none;}
+  .toprow select{max-width:48vw;}
+  .toprow select option{color:var(--ink);}
 
-  /* Startscreen */
-  .start{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;
-    gap:16px;padding:32px;text-align:center;overflow-y:auto;
-    background:radial-gradient(900px 600px at 50% 20%, #2a2233, #1a1620);}
-  .start h1{font-size:30px;font-weight:900;
-    background:linear-gradient(90deg,var(--pink),var(--violet));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;}
-  .start p{max-width:340px;color:#d6c8d2;font-weight:600;line-height:1.5;font-size:15px;}
-  .start ol{max-width:340px;text-align:left;color:#cbb9c6;font-size:14px;font-weight:700;line-height:1.7;margin:2px 0;}
-  .start button.go{font-family:'Nunito';font-weight:900;font-size:17px;color:#fff;border:none;cursor:pointer;
-    padding:16px 34px;border-radius:18px;background:linear-gradient(135deg,var(--pink),var(--pink-deep));
-    box-shadow:0 10px 26px rgba(240,106,160,.4);}
-  .start button.go:disabled{opacity:.6;}
-  .status{font-size:13px;font-weight:700;color:#b3a3ae;min-height:18px;}
+  /* ===== Startscreen ===== */
+  .start{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;align-items:center;
+    justify-content:flex-start;gap:14px;padding:26px 18px calc(26px + env(safe-area-inset-bottom));
+    background:var(--bg);overflow-y:auto;}
+  .brand{display:flex;align-items:center;gap:10px;margin-top:4px;}
+  .brand .logo{width:44px;height:44px;border-radius:50%;background:var(--peach);border:var(--border-w) solid var(--ink);
+    display:flex;align-items:center;justify-content:center;font-size:23px;box-shadow:var(--sh-xs);}
+  .start h1{font-family:var(--font-display);font-size:28px;color:var(--ink);text-transform:uppercase;letter-spacing:-1px;}
+  .exDesc{max-width:420px;color:var(--text);font-weight:500;line-height:1.5;font-size:15px;text-align:center;}
+  .tipline{max-width:440px;background:var(--yellow);border:var(--border-w) solid var(--ink);border-radius:var(--r-lg);
+    box-shadow:var(--sh-xs);padding:9px 13px;font-size:13px;font-weight:500;color:var(--ink);text-align:center;line-height:1.4;}
 
-  /* Übungs-Auswahl als Chips (Startscreen) */
-  .chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;max-width:360px;}
-  .chip{font-family:'Nunito';font-weight:800;font-size:14px;color:#e7d9e3;cursor:pointer;
-    padding:10px 16px;border-radius:20px;border:2px solid rgba(255,255,255,.18);
-    background:rgba(255,255,255,.06);transition:all .12s ease;}
-  .chip.active{color:#fff;border-color:transparent;
-    background:linear-gradient(135deg,var(--violet),var(--violet-deep));box-shadow:0 6px 18px rgba(154,123,232,.4);}
+  .block{width:min(460px,95vw);background:var(--cream);border:var(--border-w) solid var(--ink);
+    border-radius:var(--r-xl);box-shadow:var(--sh-card);padding:15px;}
+  .block h2{font-family:var(--font-display);font-size:14px;text-transform:uppercase;letter-spacing:-.2px;color:var(--ink);
+    display:flex;justify-content:space-between;align-items:center;cursor:pointer;}
+  .block h2 .chev{font-size:16px;transition:transform .14s var(--ease);}
+  .block h2 .chev.open{transform:rotate(90deg);}
+  .blockbody{margin-top:12px;}
 
-  .toprow{position:fixed;top:calc(12px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);
-    z-index:15;display:flex;gap:8px;align-items:center;}
-  .toprow button{pointer-events:auto;font-family:'Nunito';font-weight:800;font-size:13px;color:#fff;border:none;cursor:pointer;
-    padding:9px 14px;border-radius:14px;background:rgba(255,255,255,.16);backdrop-filter:blur(6px);}
-  .toprow select{pointer-events:auto;font-family:'Nunito';font-weight:800;font-size:13px;color:#fff;border:none;cursor:pointer;
-    padding:9px 12px;border-radius:14px;background:rgba(255,255,255,.16);backdrop-filter:blur(6px);
-    -webkit-appearance:none;appearance:none;text-align:center;}
-  .toprow select option{color:#1a1620;}
+  .expicker{display:flex;flex-wrap:wrap;gap:7px;}
+  .exchip{font-family:var(--font-sans);font-weight:600;font-size:13px;color:var(--ink);
+    padding:8px 12px;border-radius:var(--r-pill);border:2px solid var(--ink);box-shadow:var(--sh-xs);
+    display:flex;align-items:center;gap:6px;background:#fff;}
+  .exchip.active{box-shadow:var(--sh-sm);background:var(--peach);}
+  .exchip .dot{width:10px;height:10px;border-radius:50%;border:1.5px solid var(--ink);flex:none;}
+  .exchip .star{color:var(--gold);font-size:13px;}
+
+  .flbl{font-weight:700;font-size:11px;color:var(--text-mid);text-transform:uppercase;letter-spacing:.5px;
+    width:100%;margin-bottom:7px;}
+  .profrow{margin-bottom:14px;}.profrow:last-child{margin-bottom:0;}
+  .chiprow{display:flex;flex-wrap:wrap;gap:7px;}
+  .nbinput{font-family:var(--font-sans);font-size:16px;color:var(--ink);background:#fff;
+    border:var(--border-w) solid var(--ink);border-radius:var(--r-sm);padding:9px 12px;width:130px;}
+  .optchip{font-family:var(--font-sans);font-weight:600;font-size:13px;color:var(--ink);padding:8px 13px;
+    border-radius:var(--r-pill);border:2px solid var(--ink);background:#fff;}
+  .optchip.on{background:var(--peach);box-shadow:var(--sh-xs);}
+
+  .start .go{font-family:var(--font-display);font-size:18px;color:var(--ink);text-transform:uppercase;letter-spacing:-.3px;
+    border:var(--border-w) solid var(--ink);padding:15px 38px;border-radius:var(--r-pill);
+    background:var(--peach);box-shadow:var(--sh-card);}
+  .start .go:disabled{opacity:.55;}
+  .status{font-size:13px;font-weight:600;color:var(--text-mid);min-height:18px;text-align:center;}
+
+  /* ===== Summary ===== */
+  .summary{position:fixed;inset:0;z-index:25;display:flex;align-items:center;justify-content:center;
+    padding:18px;background:rgba(24,16,22,.55);overflow-y:auto;}
+  .summary .card{width:min(440px,95vw);background:var(--bg);border:var(--border-w) solid var(--ink);
+    border-radius:var(--r-xl);box-shadow:var(--sh-card);padding:20px;display:flex;flex-direction:column;gap:14px;}
+  .summary h2{font-family:var(--font-display);font-size:26px;text-transform:uppercase;letter-spacing:-1px;color:var(--ink);text-align:center;}
+  .sumstats{display:flex;gap:9px;}
+  .sumstats>div{flex:1;background:var(--cream);border:var(--border-w) solid var(--ink);border-radius:var(--r-lg);
+    box-shadow:var(--sh-xs);padding:12px 5px;text-align:center;}
+  .sumstats .big{font-family:var(--font-display);font-size:25px;color:var(--ink);letter-spacing:-.5px;line-height:1;}
+  .sumstats .sub{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--text-mid);margin-top:5px;}
+  .sumbars{display:flex;align-items:flex-end;gap:5px;height:74px;background:var(--cream);
+    border:var(--border-w) solid var(--ink);border-radius:var(--r-lg);box-shadow:var(--sh-xs);padding:8px;}
+  .repbar{flex:1;min-width:6px;height:100%;display:flex;align-items:flex-end;background:var(--bar-empty);
+    border:1.5px solid var(--ink);border-radius:var(--r-pill);overflow:hidden;}
+  .repbarfill{width:100%;border-radius:var(--r-pill);}
+  .sumvideo{display:flex;flex-direction:column;gap:9px;}
+  .sumvid{width:100%;border-radius:var(--r-lg);border:var(--border-w) solid var(--ink);background:#000;}
+  .sumhint{font-size:13px;font-weight:500;color:var(--ink);text-align:center;line-height:1.4;
+    background:var(--yellow);border:var(--border-w) solid var(--ink);border-radius:var(--r-lg);padding:11px;}
+  .dl{text-align:center;font-weight:700;font-size:14px;color:var(--ink);text-decoration:none;
+    background:var(--sky);border:var(--border-w) solid var(--ink);border-radius:var(--r-pill);padding:11px;box-shadow:var(--sh-xs);}
+  .summary .go{font-family:var(--font-display);font-size:17px;color:var(--ink);text-transform:uppercase;letter-spacing:-.3px;
+    border:var(--border-w) solid var(--ink);padding:14px;border-radius:var(--r-pill);background:var(--lime);box-shadow:var(--sh-card);}
+
   .hidden{display:none!important;}
 </style>
 </head>
@@ -138,15 +186,15 @@
 <!-- HUD -->
 <div class="hud hidden" id="hud">
   <div class="reps"><span class="num" id="repNum">0</span><span class="lbl">Reps</span></div>
-  <div class="angle"><div class="num" id="angNum">–°</div><div class="lbl" id="angLbl">Winkel</div></div>
+  <div class="angle"><div class="num" id="angNum">–</div><div class="lbl" id="angLbl">Winkel</div></div>
 </div>
 <div class="depthbar hidden" id="depthbar">
-  <div class="depthtick" id="depthtick" style="bottom:60%"></div><!-- "gut"-Marke, dynamisch -->
+  <div class="depthtick" id="depthtick" style="bottom:60%"></div>
   <div class="depthfill" id="depthfill"></div>
 </div>
 <div class="bottom hidden" id="bottom">
   <div class="cuewrap"><span class="pill" id="cuePill">Stell dich seitlich ins Bild</span></div>
-  <button class="setbtn" id="setBtn">Satz starten</button>
+  <button class="setbtn nb" id="setBtn">Satz starten</button>
 </div>
 
 <!-- Summary nach dem Satz -->
@@ -156,93 +204,218 @@
     <div class="sumstats" id="sumStats"></div>
     <div class="sumbars" id="sumBars"></div>
     <div id="sumVideo"></div>
-    <button class="go" id="newSetBtn">Neuer Satz</button>
+    <button class="go nb" id="newSetBtn">Neuer Satz</button>
   </div>
 </div>
 
 <div class="toprow hidden" id="toprow">
   <select id="exselRun" title="Übung wählen"></select>
-  <button id="resetBtn">Reps 0</button>
-  <button id="flipBtn">Kamera</button>
+  <button class="nb" id="resetBtn">Reps 0</button>
+  <button class="nb" id="flipBtn">Kamera</button>
 </div>
 
 <!-- Startscreen -->
 <div class="start" id="startScreen">
-  <h1 id="exTitle">Form-Check</h1>
-  <p id="exDesc">Misst deine Bewegungstiefe und zählt Wiederholungen automatisch.</p>
-  <div class="chips" id="chips"></div>
-  <ol>
-    <li>1 · Handy <b>seitlich</b> aufstellen (Profil zur Kamera)</li>
-    <li>2 · Ganzer Körper im Bild – die gemessenen Gelenke sichtbar</li>
-    <li>3 · Bewegen – pro Wiederholung gibt's einen Piep</li>
-  </ol>
-  <button class="go" id="startBtn">Kamera starten</button>
+  <div class="brand"><div class="logo">🍑</div><h1 id="exTitle">Form-Check</h1></div>
+  <p class="exDesc" id="exDesc">Misst deine Bewegungstiefe und zählt Wiederholungen automatisch.</p>
+  <div class="tipline" id="exTip"></div>
+
+  <!-- Übungs-Auswahl -->
+  <div class="block">
+    <h2 id="exHead">Übung wählen <span class="chev open">›</span></h2>
+    <div class="blockbody" id="exBody"><div class="expicker" id="expicker"></div></div>
+  </div>
+
+  <!-- Profil -->
+  <div class="block">
+    <h2 id="profHead">Dein Profil <span class="chev">›</span></h2>
+    <div class="blockbody hidden" id="profBody">
+      <div class="profrow">
+        <div class="flbl">Körpergröße (cm)</div>
+        <input class="nbinput" id="heightInput" inputmode="numeric" placeholder="z.B. 168">
+        <div class="status" style="text-align:left;margin-top:6px">Wird gespeichert &amp; angezeigt. Gelenkwinkel sind körpergrößen­unabhängig — die Bewertung steuert dein Level.</div>
+      </div>
+      <div class="profrow">
+        <div class="flbl">Level (steuert, wie streng „tief genug" gilt)</div>
+        <div class="chiprow" id="levelChips"></div>
+      </div>
+      <div class="profrow">
+        <div class="flbl">Ziele (heben passende Übungen mit ★ hervor)</div>
+        <div class="chiprow" id="goalChips"></div>
+      </div>
+    </div>
+  </div>
+
+  <button class="go nb" id="startBtn">Kamera starten</button>
   <div class="status" id="status"></div>
 </div>
 
 <script>
 // =====================================================================
-//  ÜBUNGS-CONFIGS  (Briefing Abschnitt 5)
-//  Jede Übung ist nur Daten. Winkel in Grad. sides = ein Tripel pro
-//  Körperseite, der MITTLERE Punkt ist das gemessene Gelenk.
-//    type 'low'  : Arbeitsphase = KLEINER Winkel (Squat, Lunge, Pushup, Curl)
-//    type 'high' : Arbeitsphase = GROSSER Winkel (Hip Thrust)
-//  enter/exit/good/ok werden in setExercise() einmalig in pct umgerechnet.
+//  STAMMDATEN: Kategorien, Level, Ziele
 // =====================================================================
-const EXERCISES = {
-  squat: {
-    label:'Kniebeuge', type:'low', joint:'Kniewinkel',
+// Muskelgruppen-Kategorien (Farben aus dem Peach-Design-System)
+const CATEGORIES={
+  'glute-max': {label:'Glute Max',   color:'#EE8FB4'},
+  'glute-quad':{label:'Glute & Quad',color:'#E8B86A'},
+  'glute-hams':{label:'Glute & Hams',color:'#A7D98C'},
+  'ruecken':   {label:'Rücken',      color:'#84C3E0'},
+  'brust':     {label:'Brust',       color:'#F0A0A0'},
+  'schultern': {label:'Schultern',   color:'#C2DB7E'},
+  'bizeps':    {label:'Bizeps',      color:'#E6C57E'},
+  'trizeps':   {label:'Trizeps',     color:'#93B6E0'},
+  'bauch':     {label:'Bauch',       color:'#D6D080'}
+};
+// Erfahrungslevel -> Faktor auf die gut/fast-Schwellen (ehrlicher Hebel)
+const LEVELS={
+  anf:{label:'Anfänger', factor:0.88},
+  mid:{label:'Mittel',   factor:1.00},
+  pro:{label:'Profi',    factor:1.07}
+};
+// Trainingsziele -> empfehlen passende Übungen
+const GOALS={
+  glute:{label:'Glutefokus'},
+  legs: {label:'Beinkraft'},
+  upper:{label:'Oberkörper'},
+  slim: {label:'Schmaler Oberkörper'},
+  core: {label:'Core/Bauch'},
+  full: {label:'Ganzkörper'}
+};
+
+// =====================================================================
+//  ÜBUNGS-CONFIGS  — jede Übung ist nur Daten
+//  type 'low'  : Arbeitsphase = KLEINER Winkel · type 'high' : GROSSER Winkel
+//  sides: ein Tripel pro Körperseite, MITTLERER Punkt = gemessenes Gelenk
+//  Winkel in Grad. enter/exit/good/ok werden in setExercise() zu pct.
+//  Werte sind Startpunkte — nach echtem Test justieren!
+// =====================================================================
+const EXERCISES={
+  squat:{ label:'Kniebeuge', type:'low', joint:'Kniewinkel', cat:'glute-quad', goals:['legs','glute','slim','full'],
     sides:[['left_hip','left_knee','left_ankle'],['right_hip','right_knee','right_ankle']],
     stand:172, deep:72, enter:110, exit:150, good:90, ok:110,
     cue:'Seitlich · ganzer Körper im Bild',
-    desc:'Misst deine Kniebeugen-Tiefe und zählt Wiederholungen automatisch.'
-  },
-  hipthrust: {
-    label:'Hip Thrust', type:'high', joint:'Hüftwinkel',
+    desc:'Misst deine Kniebeugen-Tiefe und zählt Wiederholungen automatisch.',
+    tip:'Hüfte tief & zurück, Knie über den Zehen, Brust auf.' },
+  hipthrust:{ label:'Hip Thrust', type:'high', joint:'Hüftwinkel', cat:'glute-max', goals:['glute','slim','full'],
     sides:[['left_shoulder','left_hip','left_knee'],['right_shoulder','right_hip','right_knee']],
     stand:90, top:178, enter:160, exit:120, good:170, ok:155,
     cue:'Seitlich · Schulter, Hüfte, Knie im Bild',
-    desc:'Misst, wie weit du die Hüfte streckst, und zählt Wiederholungen.'
-  },
-  lunge: {
-    label:'Ausfallschritt', type:'low', joint:'Kniewinkel',
+    desc:'Misst, wie weit du die Hüfte streckst, und zählt Wiederholungen.',
+    tip:'Oben den Po fest anspannen, Rippen unten — kein Hohlkreuz.' },
+  lunge:{ label:'Ausfallschritt', type:'low', joint:'Kniewinkel', cat:'glute-quad', goals:['legs','glute','slim','full'],
     sides:[['left_hip','left_knee','left_ankle'],['right_hip','right_knee','right_ankle']],
     stand:172, deep:80, enter:115, exit:150, good:95, ok:115,
     cue:'Seitlich · vorderes Bein im Bild',
-    desc:'Misst die Tiefe deiner Ausfallschritte und zählt Wiederholungen.'
-  },
-  pushup: {
-    label:'Liegestütze', type:'low', joint:'Ellbogenwinkel',
+    desc:'Misst die Tiefe deiner Ausfallschritte und zählt Wiederholungen.',
+    tip:'Vorderes Knie über dem Fuß, Oberkörper aufrecht.' },
+  rdl:{ label:'Rumän. Kreuzheben', type:'low', joint:'Hüftwinkel', cat:'glute-hams', goals:['glute','legs','slim','full'],
+    sides:[['left_shoulder','left_hip','left_knee'],['right_shoulder','right_hip','right_knee']],
+    stand:175, deep:90, enter:150, exit:165, good:105, ok:125,
+    cue:'Seitlich · Schulter, Hüfte, Knie im Bild',
+    desc:'Misst die Hüftbeuge (Hip Hinge) und zählt Wiederholungen.',
+    tip:'Hüfte nach hinten schieben, Rücken gerade, Knie leicht weich.' },
+  glutebridge:{ label:'Glute Bridge', type:'high', joint:'Hüftwinkel', cat:'glute-max', goals:['glute','slim','full'],
+    sides:[['left_shoulder','left_hip','left_knee'],['right_shoulder','right_hip','right_knee']],
+    stand:100, top:175, enter:150, exit:120, good:165, ok:150,
+    cue:'Seitlich · am Boden, Schulter–Hüfte–Knie im Bild',
+    desc:'Misst die Hüftstreckung am Boden und zählt Wiederholungen.',
+    tip:'Fersen nah am Po, oben kurz halten und Po anspannen.' },
+  bulgarian:{ label:'Bulgarian Split Squat', type:'low', joint:'Kniewinkel', cat:'glute-quad', goals:['legs','glute','slim','full'],
+    sides:[['left_hip','left_knee','left_ankle'],['right_hip','right_knee','right_ankle']],
+    stand:170, deep:80, enter:120, exit:150, good:95, ok:115,
+    cue:'Seitlich · vorderes Bein im Bild',
+    desc:'Misst die Tiefe des hinteren-Fuß-erhöht-Squats und zählt Reps.',
+    tip:'Hinterer Fuß erhöht, Gewicht aufs vordere Bein.' },
+  stepup:{ label:'Step-up', type:'low', joint:'Kniewinkel', cat:'glute-quad', goals:['legs','glute','slim','full'],
+    sides:[['left_hip','left_knee','left_ankle'],['right_hip','right_knee','right_ankle']],
+    stand:172, deep:85, enter:125, exit:155, good:100, ok:120,
+    cue:'Seitlich · Bein auf der Stufe im Bild',
+    desc:'Misst die Kniebeuge beim Aufsteigen und zählt Wiederholungen.',
+    tip:'Ganze Kraft aus dem oberen Bein, nicht vom Boden abdrücken.' },
+  goodmorning:{ label:'Good Morning', type:'low', joint:'Hüftwinkel', cat:'glute-hams', goals:['glute','legs','slim','full'],
+    sides:[['left_shoulder','left_hip','left_knee'],['right_shoulder','right_hip','right_knee']],
+    stand:175, deep:75, enter:140, exit:165, good:90, ok:110,
+    cue:'Seitlich · Schulter, Hüfte, Knie im Bild',
+    desc:'Misst die Hüftbeuge mit gestreckterem Rücken und zählt Reps.',
+    tip:'Knie weich, Hüfte zurück, Rücken neutral halten.' },
+  pushup:{ label:'Liegestütze', type:'low', joint:'Ellbogenwinkel', cat:'brust', goals:['upper','full'],
     sides:[['left_shoulder','left_elbow','left_wrist'],['right_shoulder','right_elbow','right_wrist']],
     stand:165, deep:80, enter:105, exit:150, good:95, ok:115,
     cue:'Seitlich · Schulter, Ellbogen, Hand im Bild',
-    desc:'Misst, wie tief du runtergehst, und zählt Wiederholungen.'
-  },
-  curl: {
-    label:'Bizeps-Curl', type:'low', joint:'Ellbogenwinkel',
+    desc:'Misst, wie tief du runtergehst, und zählt Wiederholungen.',
+    tip:'Körper bleibt eine Linie, Ellbogen ~45 Grad zum Körper.' },
+  shoulderpress:{ label:'Schulterdrücken', type:'high', joint:'Ellbogenwinkel', cat:'schultern', goals:['upper','full'],
+    sides:[['left_shoulder','left_elbow','left_wrist'],['right_shoulder','right_elbow','right_wrist']],
+    stand:70, top:175, enter:140, exit:100, good:165, ok:150,
+    cue:'Seitlich · Schulter, Ellbogen, Hand im Bild',
+    desc:'Misst die Streckung nach oben (Lockout) und zählt Wiederholungen.',
+    tip:'Rippen unten, Gewicht über der Schulter ausstrecken.' },
+  dips:{ label:'Trizeps-Dips', type:'low', joint:'Ellbogenwinkel', cat:'trizeps', goals:['upper','full'],
+    sides:[['left_shoulder','left_elbow','left_wrist'],['right_shoulder','right_elbow','right_wrist']],
+    stand:170, deep:80, enter:120, exit:150, good:90, ok:110,
+    cue:'Seitlich · Schulter, Ellbogen, Hand im Bild',
+    desc:'Misst die Tiefe der Dips und zählt Wiederholungen.',
+    tip:'Schultern weg von den Ohren, Ellbogen nach hinten.' },
+  row:{ label:'Vorgeb. Rudern', type:'low', joint:'Ellbogenwinkel', cat:'ruecken', goals:['upper','full'],
+    sides:[['left_shoulder','left_elbow','left_wrist'],['right_shoulder','right_elbow','right_wrist']],
+    stand:160, deep:60, enter:110, exit:140, good:75, ok:95,
+    cue:'Seitlich · Oberkörper vorgebeugt, Arm im Bild',
+    desc:'Misst den Zug (Ellbogenbeuge) und zählt Wiederholungen.',
+    tip:'Oberkörper stabil vorgebeugt, Ellbogen eng am Körper ziehen.' },
+  curl:{ label:'Bizeps-Curl', type:'low', joint:'Ellbogenwinkel', cat:'bizeps', goals:['upper','full'],
     sides:[['left_shoulder','left_elbow','left_wrist'],['right_shoulder','right_elbow','right_wrist']],
     stand:160, deep:40, enter:80, exit:140, good:50, ok:70,
     cue:'Seitlich · Schulter, Ellbogen, Hand im Bild',
-    desc:'Misst die Beuge deiner Curls und zählt Wiederholungen.'
-  }
+    desc:'Misst die Beuge deiner Curls und zählt Wiederholungen.',
+    tip:'Ellbogen fix am Körper, kein Schwung aus der Hüfte.' },
+  crunch:{ label:'Crunch', type:'low', joint:'Rumpfwinkel', cat:'bauch', goals:['core','full'],
+    sides:[['left_shoulder','left_hip','left_knee'],['right_shoulder','right_hip','right_knee']],
+    stand:165, deep:110, enter:140, exit:155, good:120, ok:135,
+    cue:'Seitlich · Oberkörper, Hüfte, Knie im Bild',
+    desc:'Misst das Aufrollen (Rumpfwinkel) und zählt Wiederholungen. Experimentell.',
+    tip:'Nur die Schulterblätter heben, unterer Rücken bleibt am Boden.' }
 };
 
 // =====================================================================
 //  ZUSTAND
 // =====================================================================
 let detector=null, video, canvas, ctx, stream=null, running=false;
-let facing='environment';                 // Rückkamera; "user" = Frontkamera
+let facing='environment';
 
-let CUR=null;                             // aktive Config (mit vorberechneten *Pct)
-let reps=0, stage='ready', workExtremePct=0, workExtremeAngle=null;  // Zustandsautomat (pct-Raum)
-let repLog=[];                            // pro Rep: {extremePct, quality, angle}
+let CUR=null;
+let reps=0, stage='ready', workExtremePct=0, workExtremeAngle=null;
+let repLog=[];                 // pro Rep: {extremePct, quality, angle}
 
-// Satz-Flow + Video-Aufnahme (optional, mit iOS-Absicherung)
+// Satz-Flow + Video-Aufnahme (optional, iOS-Absicherung)
 let setActive=false;
 let recordingSupported=false, mediaRecorder=null, recordedChunks=[], recordedMime='', recordedURL=null;
 
-// Session-Objekt für spätere Peach-Anbindung (NOCH NICHT exportieren)
+// Eigenständiges Profil (NICHT Peach) — lokal in formcheck_profile
+const PROFILE_KEY='formcheck_profile';
+let profile={height:'', level:'mid', goals:[]};
+
+// Session-Objekt (nur im Speicher; keine Peach-Anbindung)
 let session=null;
+
+// =====================================================================
+//  PROFIL: laden / speichern
+// =====================================================================
+function loadProfile(){
+  try{
+    const r=localStorage.getItem(PROFILE_KEY);
+    if(r){ const p=JSON.parse(r);
+      profile={ height:(p.height||'').toString().replace(/[^0-9]/g,''),
+                level:LEVELS[p.level]?p.level:'mid',
+                goals:Array.isArray(p.goals)?p.goals.filter(g=>GOALS[g]):[] };
+    }
+  }catch(e){}
+}
+function saveProfile(){ try{ localStorage.setItem(PROFILE_KEY,JSON.stringify(profile)); }catch(e){} }
+function isRecommended(ex){
+  if(!profile.goals.length) return false;
+  if(profile.goals.indexOf('full')>=0) return true;
+  return ex.goals.some(g=>profile.goals.indexOf(g)>=0);
+}
 
 // =====================================================================
 //  1) KAMERA
@@ -254,7 +427,6 @@ async function startCamera(){
   });
   video.srcObject=stream;
   await video.play();
-  // Canvas an die echte Videogröße koppeln -> Keypoints passen 1:1
   canvas.width=video.videoWidth;
   canvas.height=video.videoHeight;
 }
@@ -274,21 +446,18 @@ async function loadModel(setStatus){
 // =====================================================================
 //  3) MATHE: Winkel & Tiefen-Prozent
 // =====================================================================
-// Winkel am Punkt b (zwischen den Strecken b->a und b->c), in Grad
 function angleAt(a,b,c){
   const abx=a.x-b.x, aby=a.y-b.y, cbx=c.x-b.x, cby=c.y-b.y;
   const dot=abx*cbx+aby*cby;
   const mag=(Math.hypot(abx,aby)*Math.hypot(cbx,cby))||1;
   return Math.acos(Math.max(-1,Math.min(1,dot/mag)))*180/Math.PI;
 }
-// Winkel -> Tiefen-Prozent (0..1) je nach Übungs-Typ (Briefing 4b)
 function angleToPct(ex,ang){
   let pct;
   if(ex.type==='low') pct=(ex.stand-ang)/(ex.stand-ex.deep);
   else                pct=(ang-ex.stand)/(ex.top-ex.stand);
   return Math.max(0,Math.min(1,pct));
 }
-// Gelenke config-getrieben wählen: beide Seiten prüfen, sicherere nehmen, sonst null
 function pickJoints(keypoints,sides){
   const map={}; for(const k of keypoints){ if(k.score>0.3) map[k.name]=k; }
   let best=null, bestScore=-1, bestSide=0;
@@ -304,10 +473,10 @@ function pickJoints(keypoints,sides){
 }
 
 // =====================================================================
-//  4) LOGIK: universeller Zustandsautomat (pct-Raum, Briefing 4c)
+//  4) LOGIK: universeller Zustandsautomat (pct-Raum)
 // =====================================================================
 function updateReps(pct,angle){
-  if(pct>workExtremePct){ workExtremePct=pct; workExtremeAngle=angle; }  // tiefster Punkt des Reps
+  if(pct>workExtremePct){ workExtremePct=pct; workExtremeAngle=angle; }
   if(pct>CUR.enterPct && stage==='ready') stage='working';
   if(pct<CUR.exitPct && stage==='working'){
     stage='ready'; reps++;
@@ -322,22 +491,16 @@ function updateReps(pct,angle){
   }
 }
 function showRepFeedback(quality){
-  const pill=document.getElementById('cuePill');
-  if(quality==='good'){ pill.textContent='Top 💪'; pill.style.color='var(--good)'; }
-  else if(quality==='ok'){
-    pill.textContent = CUR.type==='low' ? 'Fast – etwas tiefer' : 'Fast – höher strecken';
-    pill.style.color='var(--warn)';
-  }else{
-    pill.textContent = CUR.type==='low' ? 'Zu wenig – tiefer' : 'Zu wenig – höher strecken';
-    pill.style.color='var(--bad)';
-  }
+  const pill=document.getElementById('cuePill'); pill.style.color='var(--ink)';
+  if(quality==='good'){ pill.textContent='Top 💪'; pill.style.background='var(--green)'; }
+  else if(quality==='ok'){ pill.textContent = CUR.type==='low' ? 'Fast – etwas tiefer' : 'Fast – höher strecken'; pill.style.background='var(--yellow)'; }
+  else { pill.textContent = CUR.type==='low' ? 'Zu wenig – tiefer' : 'Zu wenig – höher strecken'; pill.style.background='var(--red)'; }
 }
 function updateRepCount(){
   document.getElementById('repNum').textContent=reps;
   document.getElementById('resetBtn').textContent='Reps '+reps;
 }
 
-// Kurzer Piep über die Web Audio API
 let audioCtx=null;
 function beep(){
   try{
@@ -350,19 +513,13 @@ function beep(){
     o.start(); o.stop(audioCtx.currentTime+0.2);
   }catch(e){}
 }
-// iOS: AudioContext muss aus einer Nutzer-Geste heraus aufgeweckt werden
 function primeAudio(){
-  try{
-    audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();
-    if(audioCtx.state==='suspended') audioCtx.resume();
-  }catch(e){}
+  try{ audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)(); if(audioCtx.state==='suspended') audioCtx.resume(); }catch(e){}
 }
 
 // =====================================================================
-//  SATZ-FLOW + VIDEO-AUFNAHME  (Briefing 7, zweigleisig)
-//  Daten-Auswertung läuft IMMER; Video ist optional (Feature-Detection).
+//  SATZ-FLOW + VIDEO-AUFNAHME (zweigleisig; Daten laufen IMMER)
 // =====================================================================
-// Passenden Mime-Typ finden — iOS Safari kann oft nur MP4, kein WebM
 function pickMime(){
   const cands=['video/mp4;codecs=h264','video/mp4','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
   if(!('MediaRecorder' in window)) return '';
@@ -372,9 +529,9 @@ function startRecording(){
   recordedChunks=[]; recordingSupported=false; mediaRecorder=null;
   if(recordedURL){ URL.revokeObjectURL(recordedURL); recordedURL=null; }
   try{
-    if(typeof canvas.captureStream!=='function') return;   // nicht unterstützt -> nur Daten
+    if(typeof canvas.captureStream!=='function') return;
     const mime=pickMime(); if(!mime) return;
-    const cs=canvas.captureStream(30);                      // Canvas hat Video + Skelett
+    const cs=canvas.captureStream(30);
     mediaRecorder=new MediaRecorder(cs,{mimeType:mime});
     recordedMime=mime;
     mediaRecorder.ondataavailable=e=>{ if(e.data && e.data.size) recordedChunks.push(e.data); };
@@ -407,7 +564,6 @@ function endSet(){
     showSummary(null);
   }
 }
-// Satz still abbrechen (z.B. bei Übungswechsel) — kein Summary
 function cancelSet(){
   if(!setActive) return;
   setActive=false;
@@ -416,16 +572,15 @@ function cancelSet(){
 }
 
 // =====================================================================
-//  SUMMARY  (Briefing 7c — geräteunabhängige Daten-Auswertung)
+//  SUMMARY (geräteunabhängige Daten-Auswertung)
 // =====================================================================
 function showSummary(videoURL){
   const total=repLog.length;
   const good=repLog.filter(r=>r.quality==='good').length;
   const avg = total ? repLog.reduce((s,r)=>s+r.extremePct,0)/total : 0;
 
-  // Session für spätere Peach-Anbindung vervollständigen (nur vorhalten)
   session.totalReps=total; session.goodReps=good;
-  try{ console.log('Session (für Peach):', JSON.stringify(session)); }catch(e){}
+  try{ console.log('Session:', JSON.stringify(session)); }catch(e){}
 
   document.getElementById('sumStats').innerHTML=
     '<div><div class="big">'+total+'</div><div class="sub">Reps</div></div>'+
@@ -434,7 +589,7 @@ function showSummary(videoURL){
 
   let bars='';
   for(const r of repLog){
-    const col = r.quality==='good' ? 'var(--good)' : r.quality==='ok' ? 'var(--warn)' : 'var(--bad)';
+    const col = r.quality==='good' ? 'var(--green)' : r.quality==='ok' ? 'var(--yellow)' : 'var(--red)';
     const h=Math.max(6,Math.round(r.extremePct*100));
     bars+='<div class="repbar"><div class="repbarfill" style="height:'+h+'%;background:'+col+'"></div></div>';
   }
@@ -443,47 +598,109 @@ function showSummary(videoURL){
   const vbox=document.getElementById('sumVideo');
   if(videoURL){
     const ext = recordedMime.indexOf('mp4')>=0 ? 'mp4' : 'webm';
+    vbox.className='sumvideo';
     vbox.innerHTML='<video class="sumvid" controls playsinline src="'+videoURL+'"></video>'+
       '<a class="dl" href="'+videoURL+'" download="formcheck-'+CUR.key+'.'+ext+'">Video speichern</a>';
-    vbox.style.display='flex'; vbox.style.flexDirection='column'; vbox.style.gap='10px';
   }else{
+    vbox.className='';
     vbox.innerHTML='<p class="sumhint">Video-Aufnahme auf diesem Gerät nicht unterstützt — hier deine Daten.</p>';
-    vbox.style.display='block';
   }
   document.getElementById('summary').classList.remove('hidden');
 }
 function hideSummary(){ document.getElementById('summary').classList.add('hidden'); }
 
 // =====================================================================
-//  ÜBUNG SETZEN  (Briefing 6)
+//  ÜBUNG SETZEN (+ Level wirkt auf die gut/fast-Schwellen)
 // =====================================================================
 function setExercise(key){
   const ex=EXERCISES[key]; if(!ex) return;
-  cancelSet();                 // laufenden Satz beenden -> Wechsel resettet die Session
+  cancelSet();
   CUR=ex; CUR.key=key;
-  // enter/exit/good/ok einmalig in pct vorberechnen (Briefing 4b)
-  CUR.enterPct=angleToPct(CUR,CUR.enter);
+  const f=LEVELS[profile.level].factor;
+  CUR.enterPct=angleToPct(CUR,CUR.enter);   // Zählung — unabhängig vom Level
   CUR.exitPct =angleToPct(CUR,CUR.exit);
-  CUR.goodPct =angleToPct(CUR,CUR.good);
-  CUR.okPct   =angleToPct(CUR,CUR.ok);
+  const g=Math.min(0.97, angleToPct(CUR,CUR.good)*f);   // Qualität — vom Level skaliert
+  const o=Math.min(g,    angleToPct(CUR,CUR.ok)*f);
+  CUR.goodPct=g; CUR.okPct=o;
   resetSession();
   updateExerciseUI();
 }
 function resetSession(){
-  reps=0; stage='ready'; workExtremePct=0; repLog=[];
+  reps=0; stage='ready'; workExtremePct=0; workExtremeAngle=null; repLog=[];
   session={ exercise:CUR?CUR.key:null, date:new Date().toISOString(), reps:repLog };
   updateRepCount();
 }
 function updateExerciseUI(){
-  document.getElementById('exTitle').textContent='Form-Check · '+CUR.label;
+  const cat=CATEGORIES[CUR.cat];
+  document.getElementById('exTitle').textContent=CUR.label;
   document.getElementById('exDesc').textContent=CUR.desc;
+  document.getElementById('exTip').textContent='💡 '+CUR.tip;
   document.getElementById('angLbl').textContent=CUR.joint;
   document.getElementById('depthtick').style.bottom=(CUR.goodPct*100).toFixed(0)+'%';
-  const pill=document.getElementById('cuePill'); pill.textContent=CUR.cue; pill.style.color='#fff';
-  // Chips markieren
-  document.querySelectorAll('#chips .chip').forEach(c=>c.classList.toggle('active',c.dataset.key===CUR.key));
-  // Lauf-Select synchron halten
+  const pill=document.getElementById('cuePill'); pill.textContent=CUR.cue; pill.style.color='var(--ink)'; pill.style.background='var(--cream)';
+  document.querySelectorAll('#expicker .exchip').forEach(c=>c.classList.toggle('active',c.dataset.key===CUR.key));
   const sel=document.getElementById('exselRun'); if(sel) sel.value=CUR.key;
+}
+
+// =====================================================================
+//  UI-AUFBAU: Übungs-Picker (Chips + Select) und Profil
+// =====================================================================
+function buildExercisePicker(){
+  const picker=document.getElementById('expicker');
+  const sel=document.getElementById('exselRun');
+  picker.innerHTML=''; sel.innerHTML='';
+  // Chips: empfohlene zuerst
+  const keys=Object.keys(EXERCISES).sort((a,b)=>(isRecommended(EXERCISES[a])?0:1)-(isRecommended(EXERCISES[b])?0:1));
+  for(const key of keys){
+    const ex=EXERCISES[key], cat=CATEGORIES[ex.cat];
+    const chip=document.createElement('button');
+    chip.className='exchip nb'; chip.dataset.key=key;
+    chip.innerHTML='<span class="dot" style="background:'+cat.color+'"></span><span>'+ex.label+'</span>'+(isRecommended(ex)?'<span class="star">★</span>':'');
+    chip.addEventListener('click',()=>setExercise(key));
+    picker.appendChild(chip);
+  }
+  // Select: gruppiert nach Kategorie
+  const byCat={};
+  for(const key in EXERCISES){ const c=EXERCISES[key].cat; (byCat[c]=byCat[c]||[]).push(key); }
+  for(const c in CATEGORIES){
+    if(!byCat[c]) continue;
+    const og=document.createElement('optgroup'); og.label=CATEGORIES[c].label;
+    for(const key of byCat[c]){
+      const ex=EXERCISES[key];
+      const opt=document.createElement('option'); opt.value=key;
+      opt.textContent=(isRecommended(ex)?'★ ':'')+ex.label;
+      og.appendChild(opt);
+    }
+    sel.appendChild(og);
+  }
+}
+function buildProfilePanel(){
+  // Körpergröße
+  const hi=document.getElementById('heightInput'); hi.value=profile.height||'';
+  hi.addEventListener('input',()=>{ profile.height=hi.value.replace(/[^0-9]/g,'').slice(0,3); hi.value=profile.height; saveProfile(); });
+  // Level
+  const lc=document.getElementById('levelChips'); lc.innerHTML='';
+  for(const k in LEVELS){
+    const b=document.createElement('button'); b.className='optchip nb'+(profile.level===k?' on':''); b.textContent=LEVELS[k].label; b.dataset.k=k;
+    b.addEventListener('click',()=>{ profile.level=k; saveProfile();
+      lc.querySelectorAll('.optchip').forEach(x=>x.classList.toggle('on',x.dataset.k===k));
+      if(CUR) setExercise(CUR.key);   // Schwellen neu berechnen
+    });
+    lc.appendChild(b);
+  }
+  // Ziele
+  const gc=document.getElementById('goalChips'); gc.innerHTML='';
+  for(const k in GOALS){
+    const on=profile.goals.indexOf(k)>=0;
+    const b=document.createElement('button'); b.className='optchip nb'+(on?' on':''); b.textContent=GOALS[k].label; b.dataset.k=k;
+    b.addEventListener('click',()=>{
+      const i=profile.goals.indexOf(k);
+      if(i>=0) profile.goals.splice(i,1); else profile.goals.push(k);
+      b.classList.toggle('on'); saveProfile();
+      buildExercisePicker(); updateExerciseUI();   // Empfehlungen neu rendern
+    });
+    gc.appendChild(b);
+  }
 }
 
 // =====================================================================
@@ -493,21 +710,22 @@ function draw(joints,angle,pct){
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.drawImage(video,0,0,canvas.width,canvas.height);
   if(!joints) return;
-  // Farbe universell aus dem Tiefen-Prozent
-  const col = pct>=CUR.goodPct ? '#36c98a' : pct>=CUR.okPct ? '#f5a623' : '#ff9ec4';
-  // Knochen a-b-c (mittlerer Punkt = gemessenes Gelenk)
-  ctx.lineWidth=Math.max(4,canvas.width/180); ctx.strokeStyle=col; ctx.lineCap='round';
-  ctx.beginPath();
-  ctx.moveTo(joints.a.x,joints.a.y); ctx.lineTo(joints.b.x,joints.b.y);
-  ctx.lineTo(joints.c.x,joints.c.y); ctx.stroke();
+  const col = pct>=CUR.goodPct ? '#6FC36A' : pct>=CUR.okPct ? '#F5CB44' : '#F18FB6';
+  // Knochen a-b-c
+  ctx.lineWidth=Math.max(5,canvas.width/150); ctx.strokeStyle='#181016'; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(joints.a.x,joints.a.y); ctx.lineTo(joints.b.x,joints.b.y); ctx.lineTo(joints.c.x,joints.c.y); ctx.stroke();
+  ctx.lineWidth=Math.max(3,canvas.width/220); ctx.strokeStyle=col;
+  ctx.beginPath(); ctx.moveTo(joints.a.x,joints.a.y); ctx.lineTo(joints.b.x,joints.b.y); ctx.lineTo(joints.c.x,joints.c.y); ctx.stroke();
   // Gelenke
   for(const p of [joints.a,joints.b,joints.c]){
-    ctx.beginPath(); ctx.arc(p.x,p.y,Math.max(6,canvas.width/90),0,Math.PI*2);
-    ctx.fillStyle='#fff'; ctx.fill(); ctx.lineWidth=3; ctx.strokeStyle=col; ctx.stroke();
+    ctx.beginPath(); ctx.arc(p.x,p.y,Math.max(7,canvas.width/85),0,Math.PI*2);
+    ctx.fillStyle=col; ctx.fill(); ctx.lineWidth=3; ctx.strokeStyle='#181016'; ctx.stroke();
   }
-  // Winkel-Zahl am gemessenen Gelenk
-  ctx.fillStyle='#fff'; ctx.font='800 '+Math.max(20,canvas.width/24)+'px Nunito';
-  ctx.fillText(Math.round(angle)+'°', joints.b.x+14, joints.b.y);
+  // Winkel-Zahl am gemessenen Gelenk (mit Kontur lesbar)
+  const t=String(Math.round(angle)), size=Math.max(22,canvas.width/22);
+  ctx.font='700 '+size+'px "Space Grotesk",sans-serif'; ctx.textBaseline='middle';
+  ctx.lineWidth=Math.max(4,size/6); ctx.strokeStyle='#181016'; ctx.strokeText(t,joints.b.x+16,joints.b.y);
+  ctx.fillStyle='#FBF3E7'; ctx.fillText(t,joints.b.x+16,joints.b.y);
 }
 
 // =====================================================================
@@ -522,18 +740,17 @@ async function loop(){
     if(joints){
       angle=angleAt(joints.a,joints.b,joints.c);
       pct=angleToPct(CUR,angle);
-      if(setActive) updateReps(pct,angle);          // zählt nur während eines Satzes
-      // HUD aktualisieren
-      document.getElementById('angNum').textContent=Math.round(angle)+'°';
+      if(setActive) updateReps(pct,angle);
+      document.getElementById('angNum').textContent=Math.round(angle);
       document.getElementById('depthfill').style.height=(pct*100).toFixed(0)+'%';
       if(stage==='ready' && workExtremePct===0){
         const pill=document.getElementById('cuePill');
         pill.textContent = setActive ? ('Bereit · Seite '+joints.side) : ('„Satz starten" drücken · Seite '+joints.side);
-        pill.style.color='#fff';
+        pill.style.color='var(--ink)'; pill.style.background='var(--cream)';
       }
     }else{
       const pill=document.getElementById('cuePill');
-      pill.textContent=CUR.cue; pill.style.color='#fff';
+      pill.textContent=CUR.cue; pill.style.color='var(--ink)'; pill.style.background='var(--cream)';
     }
   }
   draw(joints,angle,pct);
@@ -549,24 +766,21 @@ window.addEventListener('DOMContentLoaded',()=>{
   ctx=canvas.getContext('2d');
   const setStatus=t=>document.getElementById('status').textContent=t;
 
-  // Übungs-UI aufbauen: Chips (Start) + Select (Lauf)
-  const chips=document.getElementById('chips');
-  const sel=document.getElementById('exselRun');
-  for(const key in EXERCISES){
-    const ex=EXERCISES[key];
-    const chip=document.createElement('button');
-    chip.className='chip'; chip.dataset.key=key; chip.textContent=ex.label;
-    chip.addEventListener('click',()=>setExercise(key));
-    chips.appendChild(chip);
-
-    const opt=document.createElement('option');
-    opt.value=key; opt.textContent=ex.label;
-    sel.appendChild(opt);
-  }
-  sel.addEventListener('change',()=>setExercise(sel.value)); // Wechsel resettet Session
-
-  // Default-Übung
+  loadProfile();
+  buildExercisePicker();
+  buildProfilePanel();
   setExercise('squat');
+
+  // Übungswechsel im Lauf-Select
+  document.getElementById('exselRun').addEventListener('change',e=>setExercise(e.target.value));
+
+  // Aufklappbare Blöcke
+  function toggleBlock(headId, bodyId){
+    const head=document.getElementById(headId), body=document.getElementById(bodyId);
+    head.addEventListener('click',()=>{ body.classList.toggle('hidden'); head.querySelector('.chev').classList.toggle('open',!body.classList.contains('hidden')); });
+  }
+  toggleBlock('exHead','exBody');
+  toggleBlock('profHead','profBody');
 
   document.getElementById('startBtn').addEventListener('click',async()=>{
     const btn=document.getElementById('startBtn'); btn.disabled=true;
@@ -574,7 +788,7 @@ window.addEventListener('DOMContentLoaded',()=>{
       if(!detector) await loadModel(setStatus);
       setStatus('Starte Kamera …');
       await startCamera();
-      resetSession();   // frische Session beim Start
+      resetSession();
       document.getElementById('startScreen').classList.add('hidden');
       ['hud','depthbar','bottom','toprow'].forEach(id=>document.getElementById(id).classList.remove('hidden'));
       running=true; loop();
@@ -585,11 +799,8 @@ window.addEventListener('DOMContentLoaded',()=>{
   });
 
   document.getElementById('resetBtn').addEventListener('click',resetSession);
-
-  // Satz-Flow: starten/beenden + neuer Satz aus dem Summary
   document.getElementById('setBtn').addEventListener('click',()=>{ setActive ? endSet() : startSet(); });
   document.getElementById('newSetBtn').addEventListener('click',startSet);
-
   document.getElementById('flipBtn').addEventListener('click',async()=>{
     facing = facing==='environment' ? 'user' : 'environment';
     try{ await startCamera(); }catch(e){}
