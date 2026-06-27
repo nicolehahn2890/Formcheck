@@ -1,15 +1,21 @@
 <!DOCTYPE html>
 <!--
-  FORM-CHECK · SQUAT (MVP)
-  ------------------------
+  FORM-CHECK · MULTI-ÜBUNG (Config-Refactor)
+  ------------------------------------------
   Pose-Detection im Browser. Kein Server, kein API-Key, alles lokal.
 
   Die Pipeline in 5 Schritten (so ist auch der Code unten gegliedert):
     1) KAMERA holen        -> getUserMedia liefert den Live-Videostream
     2) MODELL laden        -> MoveNet (TensorFlow.js) erkennt pro Frame 17 Körperpunkte
-    3) MATHE               -> aus Hüfte/Knie/Knöchel den Kniewinkel + Tiefe berechnen
-    4) LOGIK               -> Zustandsautomat zählt Wiederholungen + bewertet Tiefe
+    3) MATHE               -> aus 3 Gelenkpunkten den Winkel + Tiefen-Prozent berechnen
+    4) LOGIK               -> universeller Zustandsautomat zählt Reps + bewertet die Tiefe
     5) ZEICHNEN            -> Skelett + Tiefen-Balken aufs Canvas, HUD drüber
+
+  KERN-IDEE (Config-Refactor):
+    Jede Übung ist NUR ein Eintrag in EXERCISES. Die Logik ist für alle gleich.
+    Trick: jeden Winkel in einen Tiefen-Prozentwert (0..1) umrechnen. In diesem
+    pct-Raum gilt für JEDE Übung "mehr = besser/tiefer" -> der Zustandsautomat
+    ist universell. Neue Übung = neue Config-Zeile, kein neuer Code.
 
   WICHTIG: Kamera im Browser braucht HTTPS. Lokal per Doppelklick geht das auf
   dem iPhone NICHT. Über GitHub Pages (https://...) läuft es. Am PC geht localhost.
@@ -18,7 +24,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Form-Check · Squat</title>
+<title>Form-Check</title>
 
 <!-- TensorFlow.js + MoveNet (feste Versionen für Stabilität) -->
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.22.0/dist/tf-core.min.js"></script>
@@ -66,22 +72,34 @@
 
   /* Startscreen */
   .start{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;
-    gap:18px;padding:32px;text-align:center;
+    gap:16px;padding:32px;text-align:center;overflow-y:auto;
     background:radial-gradient(900px 600px at 50% 20%, #2a2233, #1a1620);}
   .start h1{font-size:30px;font-weight:900;
     background:linear-gradient(90deg,var(--pink),var(--violet));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;}
   .start p{max-width:340px;color:#d6c8d2;font-weight:600;line-height:1.5;font-size:15px;}
   .start ol{max-width:340px;text-align:left;color:#cbb9c6;font-size:14px;font-weight:700;line-height:1.7;margin:2px 0;}
-  .start button{font-family:'Nunito';font-weight:900;font-size:17px;color:#fff;border:none;cursor:pointer;
+  .start button.go{font-family:'Nunito';font-weight:900;font-size:17px;color:#fff;border:none;cursor:pointer;
     padding:16px 34px;border-radius:18px;background:linear-gradient(135deg,var(--pink),var(--pink-deep));
     box-shadow:0 10px 26px rgba(240,106,160,.4);}
-  .start button:disabled{opacity:.6;}
+  .start button.go:disabled{opacity:.6;}
   .status{font-size:13px;font-weight:700;color:#b3a3ae;min-height:18px;}
 
+  /* Übungs-Auswahl als Chips (Startscreen) */
+  .chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;max-width:360px;}
+  .chip{font-family:'Nunito';font-weight:800;font-size:14px;color:#e7d9e3;cursor:pointer;
+    padding:10px 16px;border-radius:20px;border:2px solid rgba(255,255,255,.18);
+    background:rgba(255,255,255,.06);transition:all .12s ease;}
+  .chip.active{color:#fff;border-color:transparent;
+    background:linear-gradient(135deg,var(--violet),var(--violet-deep));box-shadow:0 6px 18px rgba(154,123,232,.4);}
+
   .toprow{position:fixed;top:calc(12px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);
-    z-index:15;display:flex;gap:8px;}
+    z-index:15;display:flex;gap:8px;align-items:center;}
   .toprow button{pointer-events:auto;font-family:'Nunito';font-weight:800;font-size:13px;color:#fff;border:none;cursor:pointer;
     padding:9px 14px;border-radius:14px;background:rgba(255,255,255,.16);backdrop-filter:blur(6px);}
+  .toprow select{pointer-events:auto;font-family:'Nunito';font-weight:800;font-size:13px;color:#fff;border:none;cursor:pointer;
+    padding:9px 12px;border-radius:14px;background:rgba(255,255,255,.16);backdrop-filter:blur(6px);
+    -webkit-appearance:none;appearance:none;text-align:center;}
+  .toprow select option{color:#1a1620;}
   .hidden{display:none!important;}
 </style>
 </head>
@@ -95,45 +113,93 @@
 <!-- HUD -->
 <div class="hud hidden" id="hud">
   <div class="reps"><span class="num" id="repNum">0</span><span class="lbl">Reps</span></div>
-  <div class="angle"><div class="num" id="angNum">–°</div><div class="lbl">Kniewinkel</div></div>
+  <div class="angle"><div class="num" id="angNum">–°</div><div class="lbl" id="angLbl">Winkel</div></div>
 </div>
 <div class="depthbar hidden" id="depthbar">
-  <div class="depthtick" style="bottom:60%"></div><!-- ~Parallel-Marke -->
+  <div class="depthtick" id="depthtick" style="bottom:60%"></div><!-- "gut"-Marke, dynamisch -->
   <div class="depthfill" id="depthfill"></div>
 </div>
 <div class="cue hidden" id="cue"><span class="pill" id="cuePill">Stell dich seitlich ins Bild</span></div>
 
 <div class="toprow hidden" id="toprow">
+  <select id="exselRun" title="Übung wählen"></select>
   <button id="resetBtn">Reps 0</button>
   <button id="flipBtn">Kamera</button>
 </div>
 
 <!-- Startscreen -->
 <div class="start" id="startScreen">
-  <h1>Form-Check · Squat</h1>
-  <p>Misst deine Kniebeugen-Tiefe und zählt Wiederholungen automatisch.</p>
+  <h1 id="exTitle">Form-Check</h1>
+  <p id="exDesc">Misst deine Bewegungstiefe und zählt Wiederholungen automatisch.</p>
+  <div class="chips" id="chips"></div>
   <ol>
     <li>1 · Handy <b>seitlich</b> aufstellen (Profil zur Kamera)</li>
-    <li>2 · Ganzer Körper im Bild – Hüfte, Knie, Knöchel</li>
-    <li>3 · Beugen – pro Wiederholung gibt's einen Piep</li>
+    <li>2 · Ganzer Körper im Bild – die gemessenen Gelenke sichtbar</li>
+    <li>3 · Bewegen – pro Wiederholung gibt's einen Piep</li>
   </ol>
-  <button id="startBtn">Kamera starten</button>
+  <button class="go" id="startBtn">Kamera starten</button>
   <div class="status" id="status"></div>
 </div>
 
 <script>
 // =====================================================================
+//  ÜBUNGS-CONFIGS  (Briefing Abschnitt 5)
+//  Jede Übung ist nur Daten. Winkel in Grad. sides = ein Tripel pro
+//  Körperseite, der MITTLERE Punkt ist das gemessene Gelenk.
+//    type 'low'  : Arbeitsphase = KLEINER Winkel (Squat, Lunge, Pushup, Curl)
+//    type 'high' : Arbeitsphase = GROSSER Winkel (Hip Thrust)
+//  enter/exit/good/ok werden in setExercise() einmalig in pct umgerechnet.
+// =====================================================================
+const EXERCISES = {
+  squat: {
+    label:'Kniebeuge', type:'low', joint:'Kniewinkel',
+    sides:[['left_hip','left_knee','left_ankle'],['right_hip','right_knee','right_ankle']],
+    stand:172, deep:72, enter:110, exit:150, good:90, ok:110,
+    cue:'Seitlich · ganzer Körper im Bild',
+    desc:'Misst deine Kniebeugen-Tiefe und zählt Wiederholungen automatisch.'
+  },
+  hipthrust: {
+    label:'Hip Thrust', type:'high', joint:'Hüftwinkel',
+    sides:[['left_shoulder','left_hip','left_knee'],['right_shoulder','right_hip','right_knee']],
+    stand:90, top:178, enter:160, exit:120, good:170, ok:155,
+    cue:'Seitlich · Schulter, Hüfte, Knie im Bild',
+    desc:'Misst, wie weit du die Hüfte streckst, und zählt Wiederholungen.'
+  },
+  lunge: {
+    label:'Ausfallschritt', type:'low', joint:'Kniewinkel',
+    sides:[['left_hip','left_knee','left_ankle'],['right_hip','right_knee','right_ankle']],
+    stand:172, deep:80, enter:115, exit:150, good:95, ok:115,
+    cue:'Seitlich · vorderes Bein im Bild',
+    desc:'Misst die Tiefe deiner Ausfallschritte und zählt Wiederholungen.'
+  },
+  pushup: {
+    label:'Liegestütze', type:'low', joint:'Ellbogenwinkel',
+    sides:[['left_shoulder','left_elbow','left_wrist'],['right_shoulder','right_elbow','right_wrist']],
+    stand:165, deep:80, enter:105, exit:150, good:95, ok:115,
+    cue:'Seitlich · Schulter, Ellbogen, Hand im Bild',
+    desc:'Misst, wie tief du runtergehst, und zählt Wiederholungen.'
+  },
+  curl: {
+    label:'Bizeps-Curl', type:'low', joint:'Ellbogenwinkel',
+    sides:[['left_shoulder','left_elbow','left_wrist'],['right_shoulder','right_elbow','right_wrist']],
+    stand:160, deep:40, enter:80, exit:140, good:50, ok:70,
+    cue:'Seitlich · Schulter, Ellbogen, Hand im Bild',
+    desc:'Misst die Beuge deiner Curls und zählt Wiederholungen.'
+  }
+};
+
+// =====================================================================
 //  ZUSTAND
 // =====================================================================
 let detector=null, video, canvas, ctx, stream=null, running=false;
 let facing='environment';                 // Rückkamera; "user" = Frontkamera
-let reps=0, stage='up', minThisRep=180;   // Zustandsautomat fürs Zählen
-const DOWN_ANGLE=110;                      // unter diesem Kniewinkel zählt es als "unten"
-const UP_ANGLE=150;                        // über diesem wieder als "oben" -> Rep fertig
-const STAND_ANGLE=172, DEEP_ANGLE=72;      // Bereich für den Tiefen-Balken (0%..100%)
 
-// MoveNet/COCO-Punktnamen, die wir brauchen
-const J={lh:'left_hip',lk:'left_knee',la:'left_ankle',rh:'right_hip',rk:'right_knee',ra:'right_ankle'};
+let CUR=null;                             // aktive Config (mit vorberechneten *Pct)
+let reps=0, stage='ready', workExtremePct=0;   // universeller Zustandsautomat (pct-Raum)
+let repLog=[];                            // pro Rep: {extremePct, quality}
+
+// Session-Objekt für spätere Peach-Anbindung (NOCH NICHT exportieren)
+let session=null;
 
 // =====================================================================
 //  1) KAMERA
@@ -163,7 +229,7 @@ async function loadModel(setStatus){
 }
 
 // =====================================================================
-//  3) MATHE: Winkel & Tiefe
+//  3) MATHE: Winkel & Tiefen-Prozent
 // =====================================================================
 // Winkel am Punkt b (zwischen den Strecken b->a und b->c), in Grad
 function angleAt(a,b,c){
@@ -172,48 +238,62 @@ function angleAt(a,b,c){
   const mag=(Math.hypot(abx,aby)*Math.hypot(cbx,cby))||1;
   return Math.acos(Math.max(-1,Math.min(1,dot/mag)))*180/Math.PI;
 }
-// Tiefe in % aus dem Kniewinkel
-function depthPct(ang){
-  return Math.max(0,Math.min(1,(STAND_ANGLE-ang)/(STAND_ANGLE-DEEP_ANGLE)));
+// Winkel -> Tiefen-Prozent (0..1) je nach Übungs-Typ (Briefing 4b)
+function angleToPct(ex,ang){
+  let pct;
+  if(ex.type==='low') pct=(ex.stand-ang)/(ex.stand-ex.deep);
+  else                pct=(ang-ex.stand)/(ex.top-ex.stand);
+  return Math.max(0,Math.min(1,pct));
 }
-// Punkte als Lookup nach Namen, nur wenn sicher genug
-function pickJoints(keypoints){
+// Gelenke config-getrieben wählen: beide Seiten prüfen, sicherere nehmen, sonst null
+function pickJoints(keypoints,sides){
   const map={}; for(const k of keypoints){ if(k.score>0.3) map[k.name]=k; }
-  const leftOk = map[J.lh]&&map[J.lk]&&map[J.la];
-  const rightOk= map[J.rh]&&map[J.rk]&&map[J.ra];
-  // mittlere Sicherheit je Seite -> bessere Seite wählen
-  const sc=(a,b,c)=> (a&&b&&c)?(a.score+b.score+c.score)/3:-1;
-  const ls=sc(map[J.lh],map[J.lk],map[J.la]), rs=sc(map[J.rh],map[J.rk],map[J.ra]);
-  if(!leftOk && !rightOk) return null;
-  const useLeft = ls>=rs;
-  return useLeft
-    ? {hip:map[J.lh],knee:map[J.lk],ankle:map[J.la],side:'links'}
-    : {hip:map[J.rh],knee:map[J.rk],ankle:map[J.ra],side:'rechts'};
+  let best=null, bestScore=-1, bestSide=0;
+  for(let i=0;i<sides.length;i++){
+    const [na,nb,nc]=sides[i];
+    if(map[na]&&map[nb]&&map[nc]){
+      const s=(map[na].score+map[nb].score+map[nc].score)/3;
+      if(s>bestScore){ bestScore=s; best=[map[na],map[nb],map[nc]]; bestSide=i; }
+    }
+  }
+  if(!best) return null;
+  return {a:best[0], b:best[1], c:best[2], side: bestSide===0?'links':'rechts'};
 }
 
 // =====================================================================
-//  4) LOGIK: Wiederholungen zählen + Tiefen-Feedback
+//  4) LOGIK: universeller Zustandsautomat (pct-Raum, Briefing 4c)
 // =====================================================================
-function updateReps(kneeAngle){
-  minThisRep=Math.min(minThisRep,kneeAngle);
-  if(kneeAngle<DOWN_ANGLE && stage==='up'){ stage='down'; }
-  if(kneeAngle>UP_ANGLE && stage==='down'){
-    stage='up'; reps++;
-    const deepest=minThisRep; minThisRep=180;
+function updateReps(pct){
+  workExtremePct=Math.max(workExtremePct,pct);                 // tiefster Punkt des Reps
+  if(pct>CUR.enterPct && stage==='ready') stage='working';
+  if(pct<CUR.exitPct && stage==='working'){
+    stage='ready'; reps++;
+    const extreme=workExtremePct; workExtremePct=0;
+    const quality = extreme>=CUR.goodPct ? 'good' : extreme>=CUR.okPct ? 'ok' : 'low';
+    repLog.push({extremePct:extreme, quality});
+    if(session) session.reps=repLog;
     beep();
-    showRepFeedback(deepest);
-    document.getElementById('repNum').textContent=reps;
-    document.getElementById('resetBtn').textContent='Reps '+reps;
+    showRepFeedback(quality);
+    updateRepCount();
   }
 }
-function showRepFeedback(deepest){
+function showRepFeedback(quality){
   const pill=document.getElementById('cuePill');
-  if(deepest<90){ pill.textContent='Tiefe top 💪'; pill.style.color='var(--good)'; }
-  else if(deepest<110){ pill.textContent='Fast – etwas tiefer'; pill.style.color='var(--warn)'; }
-  else { pill.textContent='Zu hoch – tiefer beugen'; pill.style.color='var(--bad)'; }
+  if(quality==='good'){ pill.textContent='Top 💪'; pill.style.color='var(--good)'; }
+  else if(quality==='ok'){
+    pill.textContent = CUR.type==='low' ? 'Fast – etwas tiefer' : 'Fast – höher strecken';
+    pill.style.color='var(--warn)';
+  }else{
+    pill.textContent = CUR.type==='low' ? 'Zu wenig – tiefer' : 'Zu wenig – höher strecken';
+    pill.style.color='var(--bad)';
+  }
+}
+function updateRepCount(){
+  document.getElementById('repNum').textContent=reps;
+  document.getElementById('resetBtn').textContent='Reps '+reps;
 }
 
-// Kurzer Piep über die Web Audio API (kennst du aus Calma)
+// Kurzer Piep über die Web Audio API
 let audioCtx=null;
 function beep(){
   try{
@@ -228,27 +308,58 @@ function beep(){
 }
 
 // =====================================================================
+//  ÜBUNG SETZEN  (Briefing 6)
+// =====================================================================
+function setExercise(key){
+  const ex=EXERCISES[key]; if(!ex) return;
+  CUR=ex; CUR.key=key;
+  // enter/exit/good/ok einmalig in pct vorberechnen (Briefing 4b)
+  CUR.enterPct=angleToPct(CUR,CUR.enter);
+  CUR.exitPct =angleToPct(CUR,CUR.exit);
+  CUR.goodPct =angleToPct(CUR,CUR.good);
+  CUR.okPct   =angleToPct(CUR,CUR.ok);
+  resetSession();
+  updateExerciseUI();
+}
+function resetSession(){
+  reps=0; stage='ready'; workExtremePct=0; repLog=[];
+  session={ exercise:CUR?CUR.key:null, date:new Date().toISOString(), reps:repLog };
+  updateRepCount();
+}
+function updateExerciseUI(){
+  document.getElementById('exTitle').textContent='Form-Check · '+CUR.label;
+  document.getElementById('exDesc').textContent=CUR.desc;
+  document.getElementById('angLbl').textContent=CUR.joint;
+  document.getElementById('depthtick').style.bottom=(CUR.goodPct*100).toFixed(0)+'%';
+  const pill=document.getElementById('cuePill'); pill.textContent=CUR.cue; pill.style.color='#fff';
+  // Chips markieren
+  document.querySelectorAll('#chips .chip').forEach(c=>c.classList.toggle('active',c.dataset.key===CUR.key));
+  // Lauf-Select synchron halten
+  const sel=document.getElementById('exselRun'); if(sel) sel.value=CUR.key;
+}
+
+// =====================================================================
 //  5) ZEICHNEN
 // =====================================================================
-const BONES=[['hip','knee'],['knee','ankle']]; // wir zeichnen nur das relevante Bein
-function draw(joints,kneeAngle){
+function draw(joints,angle,pct){
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.drawImage(video,0,0,canvas.width,canvas.height);
   if(!joints) return;
-  const col = kneeAngle<90 ? '#36c98a' : kneeAngle<110 ? '#f5a623' : '#ff9ec4';
-  // Knochen
+  // Farbe universell aus dem Tiefen-Prozent
+  const col = pct>=CUR.goodPct ? '#36c98a' : pct>=CUR.okPct ? '#f5a623' : '#ff9ec4';
+  // Knochen a-b-c (mittlerer Punkt = gemessenes Gelenk)
   ctx.lineWidth=Math.max(4,canvas.width/180); ctx.strokeStyle=col; ctx.lineCap='round';
   ctx.beginPath();
-  ctx.moveTo(joints.hip.x,joints.hip.y); ctx.lineTo(joints.knee.x,joints.knee.y);
-  ctx.lineTo(joints.ankle.x,joints.ankle.y); ctx.stroke();
+  ctx.moveTo(joints.a.x,joints.a.y); ctx.lineTo(joints.b.x,joints.b.y);
+  ctx.lineTo(joints.c.x,joints.c.y); ctx.stroke();
   // Gelenke
-  for(const p of [joints.hip,joints.knee,joints.ankle]){
+  for(const p of [joints.a,joints.b,joints.c]){
     ctx.beginPath(); ctx.arc(p.x,p.y,Math.max(6,canvas.width/90),0,Math.PI*2);
     ctx.fillStyle='#fff'; ctx.fill(); ctx.lineWidth=3; ctx.strokeStyle=col; ctx.stroke();
   }
-  // Winkel-Zahl am Knie
+  // Winkel-Zahl am gemessenen Gelenk
   ctx.fillStyle='#fff'; ctx.font='800 '+Math.max(20,canvas.width/24)+'px Nunito';
-  ctx.fillText(Math.round(kneeAngle)+'°', joints.knee.x+14, joints.knee.y);
+  ctx.fillText(Math.round(angle)+'°', joints.b.x+14, joints.b.y);
 }
 
 // =====================================================================
@@ -257,25 +368,26 @@ function draw(joints,kneeAngle){
 async function loop(){
   if(!running) return;
   const poses=await detector.estimatePoses(video,{flipHorizontal:false});
-  let kneeAngle=null, joints=null;
+  let angle=null, joints=null, pct=0;
   if(poses[0]){
-    joints=pickJoints(poses[0].keypoints);
+    joints=pickJoints(poses[0].keypoints, CUR.sides);
     if(joints){
-      kneeAngle=angleAt(joints.hip,joints.knee,joints.ankle);
-      updateReps(kneeAngle);
+      angle=angleAt(joints.a,joints.b,joints.c);
+      pct=angleToPct(CUR,angle);
+      updateReps(pct);
       // HUD aktualisieren
-      document.getElementById('angNum').textContent=Math.round(kneeAngle)+'°';
-      document.getElementById('depthfill').style.height=(depthPct(kneeAngle)*100).toFixed(0)+'%';
-      if(stage==='up' && minThisRep===180){
+      document.getElementById('angNum').textContent=Math.round(angle)+'°';
+      document.getElementById('depthfill').style.height=(pct*100).toFixed(0)+'%';
+      if(stage==='ready' && workExtremePct===0){
         const pill=document.getElementById('cuePill');
         pill.textContent='Bereit · Seite '+joints.side; pill.style.color='#fff';
       }
     }else{
-      document.getElementById('cuePill').textContent='Stell dich seitlich ins Bild';
-      document.getElementById('cuePill').style.color='#fff';
+      const pill=document.getElementById('cuePill');
+      pill.textContent=CUR.cue; pill.style.color='#fff';
     }
   }
-  draw(joints,kneeAngle);
+  draw(joints,angle,pct);
   requestAnimationFrame(loop);
 }
 
@@ -288,12 +400,32 @@ window.addEventListener('DOMContentLoaded',()=>{
   ctx=canvas.getContext('2d');
   const setStatus=t=>document.getElementById('status').textContent=t;
 
+  // Übungs-UI aufbauen: Chips (Start) + Select (Lauf)
+  const chips=document.getElementById('chips');
+  const sel=document.getElementById('exselRun');
+  for(const key in EXERCISES){
+    const ex=EXERCISES[key];
+    const chip=document.createElement('button');
+    chip.className='chip'; chip.dataset.key=key; chip.textContent=ex.label;
+    chip.addEventListener('click',()=>setExercise(key));
+    chips.appendChild(chip);
+
+    const opt=document.createElement('option');
+    opt.value=key; opt.textContent=ex.label;
+    sel.appendChild(opt);
+  }
+  sel.addEventListener('change',()=>setExercise(sel.value)); // Wechsel resettet Session
+
+  // Default-Übung
+  setExercise('squat');
+
   document.getElementById('startBtn').addEventListener('click',async()=>{
     const btn=document.getElementById('startBtn'); btn.disabled=true;
     try{
       if(!detector) await loadModel(setStatus);
       setStatus('Starte Kamera …');
       await startCamera();
+      resetSession();   // frische Session beim Start
       document.getElementById('startScreen').classList.add('hidden');
       ['hud','depthbar','cue','toprow'].forEach(id=>document.getElementById(id).classList.remove('hidden'));
       running=true; loop();
@@ -303,11 +435,7 @@ window.addEventListener('DOMContentLoaded',()=>{
     }
   });
 
-  document.getElementById('resetBtn').addEventListener('click',()=>{
-    reps=0; stage='up'; minThisRep=180;
-    document.getElementById('repNum').textContent='0';
-    document.getElementById('resetBtn').textContent='Reps 0';
-  });
+  document.getElementById('resetBtn').addEventListener('click',resetSession);
 
   document.getElementById('flipBtn').addEventListener('click',async()=>{
     facing = facing==='environment' ? 'user' : 'environment';
