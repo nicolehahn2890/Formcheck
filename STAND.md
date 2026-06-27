@@ -201,8 +201,7 @@ keine Peach-Anbindung.**
 ## Dateien im Repo
 
 - **`index.html`** — die komplette App (HTML + CSS + JS inline).
-- **`BRIEFING-formcheck.md`** — ursprüngliches Handoff-Briefing (Architektur-Vorgabe).
-- **`STAND.md`** — dieses Dokument (aktueller Stand).
+- **`STAND.md`** — dieses Dokument (aktueller Stand; ersetzt das frühere Handoff-Briefing).
 - **`assets/icon.svg`** — Quelldatei des Home-Screen-Icons (Neobrutalism-Zirkel:
   cremefarbene Schenkel mit Ink-Rand, Drehkopf, grünes Gelenk + grüner Bogen).
   PNGs daraus rendern: SVG in einem 512px-Browser-Viewport screenshotten.
