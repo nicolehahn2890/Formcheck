@@ -64,11 +64,36 @@
     background:linear-gradient(var(--good),var(--warn));transition:height .08s linear;}
   .depthtick{position:absolute;left:-6px;right:-6px;height:2px;background:rgba(255,255,255,.45);}
 
-  /* Cue unten */
-  .cue{position:fixed;left:0;right:0;bottom:0;padding:18px 18px calc(22px + env(safe-area-inset-bottom));
-    text-align:center;font-size:19px;font-weight:800;pointer-events:none;
-    background:linear-gradient(transparent,rgba(26,22,32,.82));}
-  .cue .pill{display:inline-block;padding:9px 18px;border-radius:24px;background:rgba(255,255,255,.14);backdrop-filter:blur(6px);}
+  /* Unterer Bereich: Cue + großer Satz-Button */
+  .bottom{position:fixed;left:0;right:0;bottom:0;padding:14px 18px calc(20px + env(safe-area-inset-bottom));
+    display:flex;flex-direction:column;align-items:center;gap:12px;
+    background:linear-gradient(transparent,rgba(26,22,32,.85));}
+  .cuewrap{text-align:center;font-size:19px;font-weight:800;pointer-events:none;}
+  .cuewrap .pill{display:inline-block;padding:9px 18px;border-radius:24px;background:rgba(255,255,255,.14);backdrop-filter:blur(6px);}
+  .setbtn{font-family:'Nunito';font-weight:900;font-size:18px;color:#fff;border:none;cursor:pointer;
+    padding:15px 0;width:min(420px,82vw);border-radius:18px;
+    background:linear-gradient(135deg,var(--pink),var(--pink-deep));box-shadow:0 10px 26px rgba(240,106,160,.4);}
+  .setbtn.active{background:linear-gradient(135deg,#f0617a,#c8334f);box-shadow:0 10px 26px rgba(200,51,79,.45);}
+
+  /* Summary-Overlay */
+  .summary{position:fixed;inset:0;z-index:25;display:flex;align-items:center;justify-content:center;padding:24px;
+    background:rgba(16,12,20,.82);backdrop-filter:blur(4px);overflow-y:auto;}
+  .summary .card{width:min(440px,92vw);background:#241d2e;border-radius:22px;padding:24px;
+    display:flex;flex-direction:column;gap:16px;box-shadow:0 20px 60px rgba(0,0,0,.5);}
+  .summary h2{font-size:24px;font-weight:900;text-align:center;
+    background:linear-gradient(90deg,var(--pink),var(--violet));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;}
+  .sumstats{display:flex;justify-content:space-around;text-align:center;gap:10px;}
+  .sumstats .big{font-size:34px;font-weight:900;font-variant-numeric:tabular-nums;line-height:1;}
+  .sumstats .sub{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:#cbb9c6;margin-top:4px;}
+  .sumbars{display:flex;align-items:flex-end;gap:5px;height:72px;padding:0 2px;}
+  .repbar{flex:1;min-width:6px;height:100%;display:flex;align-items:flex-end;background:rgba(255,255,255,.07);border-radius:5px;overflow:hidden;}
+  .repbarfill{width:100%;border-radius:5px;}
+  .sumvid{width:100%;border-radius:14px;background:#000;}
+  .sumhint{font-size:13px;font-weight:700;color:#c9b6c4;text-align:center;line-height:1.4;}
+  .dl{text-align:center;font-weight:800;font-size:14px;color:var(--violet);text-decoration:none;
+    padding:8px;border:2px solid rgba(183,156,240,.5);border-radius:12px;}
+  .summary button.go{font-family:'Nunito';font-weight:900;font-size:17px;color:#fff;border:none;cursor:pointer;
+    padding:15px;border-radius:16px;background:linear-gradient(135deg,var(--violet),var(--violet-deep));}
 
   /* Startscreen */
   .start{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -119,7 +144,21 @@
   <div class="depthtick" id="depthtick" style="bottom:60%"></div><!-- "gut"-Marke, dynamisch -->
   <div class="depthfill" id="depthfill"></div>
 </div>
-<div class="cue hidden" id="cue"><span class="pill" id="cuePill">Stell dich seitlich ins Bild</span></div>
+<div class="bottom hidden" id="bottom">
+  <div class="cuewrap"><span class="pill" id="cuePill">Stell dich seitlich ins Bild</span></div>
+  <button class="setbtn" id="setBtn">Satz starten</button>
+</div>
+
+<!-- Summary nach dem Satz -->
+<div class="summary hidden" id="summary">
+  <div class="card">
+    <h2>Satz fertig</h2>
+    <div class="sumstats" id="sumStats"></div>
+    <div class="sumbars" id="sumBars"></div>
+    <div id="sumVideo"></div>
+    <button class="go" id="newSetBtn">Neuer Satz</button>
+  </div>
+</div>
 
 <div class="toprow hidden" id="toprow">
   <select id="exselRun" title="Übung wählen"></select>
@@ -195,8 +234,12 @@ let detector=null, video, canvas, ctx, stream=null, running=false;
 let facing='environment';                 // Rückkamera; "user" = Frontkamera
 
 let CUR=null;                             // aktive Config (mit vorberechneten *Pct)
-let reps=0, stage='ready', workExtremePct=0;   // universeller Zustandsautomat (pct-Raum)
-let repLog=[];                            // pro Rep: {extremePct, quality}
+let reps=0, stage='ready', workExtremePct=0, workExtremeAngle=null;  // Zustandsautomat (pct-Raum)
+let repLog=[];                            // pro Rep: {extremePct, quality, angle}
+
+// Satz-Flow + Video-Aufnahme (optional, mit iOS-Absicherung)
+let setActive=false;
+let recordingSupported=false, mediaRecorder=null, recordedChunks=[], recordedMime='', recordedURL=null;
 
 // Session-Objekt für spätere Peach-Anbindung (NOCH NICHT exportieren)
 let session=null;
@@ -263,14 +306,15 @@ function pickJoints(keypoints,sides){
 // =====================================================================
 //  4) LOGIK: universeller Zustandsautomat (pct-Raum, Briefing 4c)
 // =====================================================================
-function updateReps(pct){
-  workExtremePct=Math.max(workExtremePct,pct);                 // tiefster Punkt des Reps
+function updateReps(pct,angle){
+  if(pct>workExtremePct){ workExtremePct=pct; workExtremeAngle=angle; }  // tiefster Punkt des Reps
   if(pct>CUR.enterPct && stage==='ready') stage='working';
   if(pct<CUR.exitPct && stage==='working'){
     stage='ready'; reps++;
-    const extreme=workExtremePct; workExtremePct=0;
+    const extreme=workExtremePct, extremeAngle=workExtremeAngle;
+    workExtremePct=0; workExtremeAngle=null;
     const quality = extreme>=CUR.goodPct ? 'good' : extreme>=CUR.okPct ? 'ok' : 'low';
-    repLog.push({extremePct:extreme, quality});
+    repLog.push({extremePct:extreme, quality, angle:Math.round(extremeAngle)});
     if(session) session.reps=repLog;
     beep();
     showRepFeedback(quality);
@@ -306,12 +350,116 @@ function beep(){
     o.start(); o.stop(audioCtx.currentTime+0.2);
   }catch(e){}
 }
+// iOS: AudioContext muss aus einer Nutzer-Geste heraus aufgeweckt werden
+function primeAudio(){
+  try{
+    audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();
+    if(audioCtx.state==='suspended') audioCtx.resume();
+  }catch(e){}
+}
+
+// =====================================================================
+//  SATZ-FLOW + VIDEO-AUFNAHME  (Briefing 7, zweigleisig)
+//  Daten-Auswertung läuft IMMER; Video ist optional (Feature-Detection).
+// =====================================================================
+// Passenden Mime-Typ finden — iOS Safari kann oft nur MP4, kein WebM
+function pickMime(){
+  const cands=['video/mp4;codecs=h264','video/mp4','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
+  if(!('MediaRecorder' in window)) return '';
+  return cands.find(m=>{ try{ return MediaRecorder.isTypeSupported(m); }catch(e){ return false; } }) || '';
+}
+function startRecording(){
+  recordedChunks=[]; recordingSupported=false; mediaRecorder=null;
+  if(recordedURL){ URL.revokeObjectURL(recordedURL); recordedURL=null; }
+  try{
+    if(typeof canvas.captureStream!=='function') return;   // nicht unterstützt -> nur Daten
+    const mime=pickMime(); if(!mime) return;
+    const cs=canvas.captureStream(30);                      // Canvas hat Video + Skelett
+    mediaRecorder=new MediaRecorder(cs,{mimeType:mime});
+    recordedMime=mime;
+    mediaRecorder.ondataavailable=e=>{ if(e.data && e.data.size) recordedChunks.push(e.data); };
+    mediaRecorder.start();
+    recordingSupported=true;
+  }catch(e){ recordingSupported=false; mediaRecorder=null; }
+}
+function startSet(){
+  hideSummary(); primeAudio();
+  resetSession();
+  setActive=true;
+  const b=document.getElementById('setBtn'); b.textContent='Satz beenden'; b.classList.add('active');
+  startRecording();
+}
+function endSet(){
+  if(!setActive) return;
+  setActive=false;
+  const b=document.getElementById('setBtn'); b.textContent='Satz starten'; b.classList.remove('active');
+  if(recordingSupported && mediaRecorder && mediaRecorder.state!=='inactive'){
+    mediaRecorder.onstop=()=>{
+      let url=null;
+      if(recordedChunks.length){
+        const blob=new Blob(recordedChunks,{type:recordedMime});
+        url=URL.createObjectURL(blob); recordedURL=url;
+      }
+      showSummary(url);
+    };
+    try{ mediaRecorder.stop(); }catch(e){ showSummary(null); }
+  }else{
+    showSummary(null);
+  }
+}
+// Satz still abbrechen (z.B. bei Übungswechsel) — kein Summary
+function cancelSet(){
+  if(!setActive) return;
+  setActive=false;
+  const b=document.getElementById('setBtn'); if(b){ b.textContent='Satz starten'; b.classList.remove('active'); }
+  if(mediaRecorder && mediaRecorder.state!=='inactive'){ mediaRecorder.onstop=null; try{ mediaRecorder.stop(); }catch(e){} }
+}
+
+// =====================================================================
+//  SUMMARY  (Briefing 7c — geräteunabhängige Daten-Auswertung)
+// =====================================================================
+function showSummary(videoURL){
+  const total=repLog.length;
+  const good=repLog.filter(r=>r.quality==='good').length;
+  const avg = total ? repLog.reduce((s,r)=>s+r.extremePct,0)/total : 0;
+
+  // Session für spätere Peach-Anbindung vervollständigen (nur vorhalten)
+  session.totalReps=total; session.goodReps=good;
+  try{ console.log('Session (für Peach):', JSON.stringify(session)); }catch(e){}
+
+  document.getElementById('sumStats').innerHTML=
+    '<div><div class="big">'+total+'</div><div class="sub">Reps</div></div>'+
+    '<div><div class="big">'+good+'/'+total+'</div><div class="sub">tief genug</div></div>'+
+    '<div><div class="big">'+Math.round(avg*100)+'%</div><div class="sub">Ø Tiefe</div></div>';
+
+  let bars='';
+  for(const r of repLog){
+    const col = r.quality==='good' ? 'var(--good)' : r.quality==='ok' ? 'var(--warn)' : 'var(--bad)';
+    const h=Math.max(6,Math.round(r.extremePct*100));
+    bars+='<div class="repbar"><div class="repbarfill" style="height:'+h+'%;background:'+col+'"></div></div>';
+  }
+  document.getElementById('sumBars').innerHTML = total ? bars : '<div class="sumhint">Keine Reps gezählt.</div>';
+
+  const vbox=document.getElementById('sumVideo');
+  if(videoURL){
+    const ext = recordedMime.indexOf('mp4')>=0 ? 'mp4' : 'webm';
+    vbox.innerHTML='<video class="sumvid" controls playsinline src="'+videoURL+'"></video>'+
+      '<a class="dl" href="'+videoURL+'" download="formcheck-'+CUR.key+'.'+ext+'">Video speichern</a>';
+    vbox.style.display='flex'; vbox.style.flexDirection='column'; vbox.style.gap='10px';
+  }else{
+    vbox.innerHTML='<p class="sumhint">Video-Aufnahme auf diesem Gerät nicht unterstützt — hier deine Daten.</p>';
+    vbox.style.display='block';
+  }
+  document.getElementById('summary').classList.remove('hidden');
+}
+function hideSummary(){ document.getElementById('summary').classList.add('hidden'); }
 
 // =====================================================================
 //  ÜBUNG SETZEN  (Briefing 6)
 // =====================================================================
 function setExercise(key){
   const ex=EXERCISES[key]; if(!ex) return;
+  cancelSet();                 // laufenden Satz beenden -> Wechsel resettet die Session
   CUR=ex; CUR.key=key;
   // enter/exit/good/ok einmalig in pct vorberechnen (Briefing 4b)
   CUR.enterPct=angleToPct(CUR,CUR.enter);
@@ -374,13 +522,14 @@ async function loop(){
     if(joints){
       angle=angleAt(joints.a,joints.b,joints.c);
       pct=angleToPct(CUR,angle);
-      updateReps(pct);
+      if(setActive) updateReps(pct,angle);          // zählt nur während eines Satzes
       // HUD aktualisieren
       document.getElementById('angNum').textContent=Math.round(angle)+'°';
       document.getElementById('depthfill').style.height=(pct*100).toFixed(0)+'%';
       if(stage==='ready' && workExtremePct===0){
         const pill=document.getElementById('cuePill');
-        pill.textContent='Bereit · Seite '+joints.side; pill.style.color='#fff';
+        pill.textContent = setActive ? ('Bereit · Seite '+joints.side) : ('„Satz starten" drücken · Seite '+joints.side);
+        pill.style.color='#fff';
       }
     }else{
       const pill=document.getElementById('cuePill');
@@ -427,7 +576,7 @@ window.addEventListener('DOMContentLoaded',()=>{
       await startCamera();
       resetSession();   // frische Session beim Start
       document.getElementById('startScreen').classList.add('hidden');
-      ['hud','depthbar','cue','toprow'].forEach(id=>document.getElementById(id).classList.remove('hidden'));
+      ['hud','depthbar','bottom','toprow'].forEach(id=>document.getElementById(id).classList.remove('hidden'));
       running=true; loop();
     }catch(e){
       setStatus('Fehler: '+(e.message||e)+' — Kamera erlaubt? HTTPS aktiv?');
@@ -436,6 +585,10 @@ window.addEventListener('DOMContentLoaded',()=>{
   });
 
   document.getElementById('resetBtn').addEventListener('click',resetSession);
+
+  // Satz-Flow: starten/beenden + neuer Satz aus dem Summary
+  document.getElementById('setBtn').addEventListener('click',()=>{ setActive ? endSet() : startSet(); });
+  document.getElementById('newSetBtn').addEventListener('click',startSet);
 
   document.getElementById('flipBtn').addEventListener('click',async()=>{
     facing = facing==='environment' ? 'user' : 'environment';
